@@ -6,8 +6,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stratagem_engine import (  # noqa: E402
-    DEFAULT_INPUTS, INPUT_KEYS, INPUT_LABELS, INVEST_KEYS, Issue, StratagemEngine,
+from equivara_engine import (  # noqa: E402
+    DEFAULT_INPUTS, INPUT_KEYS, INPUT_LABELS, INVEST_KEYS, Issue, EquivaraEngine,
 )
 
 
@@ -17,7 +17,7 @@ def errors(issues):
 
 @pytest.fixture
 def eng():
-    return StratagemEngine()
+    return EquivaraEngine()
 
 
 def test_constants():
@@ -25,7 +25,7 @@ def test_constants():
     assert set(INPUT_LABELS) == set(INPUT_KEYS)
     assert set(DEFAULT_INPUTS) == set(INPUT_KEYS)
     assert INVEST_KEYS == [k for k in INPUT_KEYS if k.startswith("inv_")]
-    assert StratagemEngine.CYCLE_YEARS == 5 and StratagemEngine.TOTAL_CYCLES == 12
+    assert EquivaraEngine.CYCLE_YEARS == 5 and EquivaraEngine.TOTAL_CYCLES == 12
 
 
 def test_defaults_valid(eng):
@@ -103,7 +103,7 @@ def test_mfc_compares_with_previous_cycle(eng):
 
 
 def test_imf_deducts_goods():
-    eng = StratagemEngine()
+    eng = EquivaraEngine()
     eng.debt = 10000.0  # erzwingt IMF-Intervention
     inp = eng.suggest_inputs(DEFAULT_INPUTS)
     r = eng.apply(inp)
@@ -148,7 +148,7 @@ def test_json_roundtrip(eng):
     eng.apply(eng.suggest_inputs())
     s = eng.to_json()
     json.loads(s)
-    clone = StratagemEngine.from_json(s)
+    clone = EquivaraEngine.from_json(s)
     assert clone.to_json() == s
     assert clone.history == eng.history
     assert clone.runde == eng.runde
@@ -182,7 +182,7 @@ def test_full_game_with_suggest_inputs(eng):
 
 
 def test_suggest_inputs_scales_down():
-    eng = StratagemEngine()
+    eng = EquivaraEngine()
     eng.food_available = 1234.0
     eng.goods_available = 777.0
     eng.energy_available = 3333.0
