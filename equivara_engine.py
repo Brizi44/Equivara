@@ -1,6 +1,6 @@
-"""STRATAGEM 1 – Simulationsmodell (ohne GUI).
+"""Equivara – Simulationsmodell (ohne GUI).
 
-Grundlage: STRATAGEM Version 4.0, Meadows et al.
+Modell inspiriert von STRATAGEM-1 (Meadows et al.), eigene Umsetzung.
 
 - 5 Sektoren, 12 Zyklen à 5 Jahre = 60 Jahre, 200 Einwohner zu Beginn
 - Kapitalstocks mit unterschiedlichen Lebensdauern
@@ -15,7 +15,7 @@ Grundlage: STRATAGEM Version 4.0, Meadows et al.
 
 Die Kennlinien aus dem Kurzhandbuch sind als lineare Interpolation hinterlegt.
 
-Gegenüber der ursprünglichen Fassung (stratagem1_akkurater.py) umgesetzte
+Gegenüber der ursprünglichen Fassung (früher stratagem1_akkurater.py) umgesetzte
 Modellkorrekturen sind im Code mit "KORREKTUR n" markiert:
  1. validate() prüft alles VOR jeder Mutation; abgelehnte Züge ändern nichts.
  2. Finanzlogik ohne Doppelbuchung der Zinsen, mit Devisenreserve.
@@ -30,13 +30,16 @@ Nur Standardbibliothek, keine tkinter-Abhängigkeit.
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import math
+import random
 from dataclasses import dataclass
 
 __all__ = [
     "INPUT_KEYS", "INPUT_LABELS", "INVEST_KEYS", "DEFAULT_INPUTS",
-    "Issue", "StratagemEngine", "clamp", "interp",
+    "SCENARIOS", "EVENTS", "CURVE_INFO",
+    "Issue", "EquivaraEngine", "clamp", "interp",
 ]
 
 
@@ -45,7 +48,7 @@ def clamp(value, low, high):
 
 
 def interp(x, points):
-    """Lineare Interpolation einer STRATAGEM-Kennlinie."""
+    """Lineare Interpolation einer Modell-Kennlinie."""
     if x <= points[0][0]:
         return points[0][1]
     if x >= points[-1][0]:
@@ -112,6 +115,134 @@ DEFAULT_INPUTS = {
 TOL = 1e-7
 
 
+# =============================================================================
+# Szenarien und Ereignisse
+# =============================================================================
+
+SCENARIOS = {
+    "standard": {
+        "name": "Standard",
+        "description": "Der klassische Startzustand: 200 Einwohner, moderate Schulden "
+                       "und ausgeglichene Kapitalstöcke.",
+        "overrides": {},
+    },
+    "verschuldet": {
+        "name": "Verschuldet",
+        "description": "Das Land startet mit hohen Auslandsschulden. Hohe Zinsen und teurere Importe "
+                       "verlangen konsequenten Export und Tilgung.",
+        "overrides": {
+            "debt": 1600.0,
+            "avg_exports_history": [1200.0, 1200.0, 1200.0],
+        },
+    },
+    "energiearm": {
+        "name": "Energiearm",
+        "description": "Kaum Kraftwerke und geringe Energiereserven: Ohne Investitionen in Energieproduktion "
+                       "oder Effizienz bleibt die Wirtschaft unter ihren Möglichkeiten.",
+        "overrides": {
+            "cap_energy_prod": 600.0,
+            "energy_available": 10800.0,
+            "last_energy_production": 9000.0,
+            "cap_energy_eff": 60.0,
+        },
+    },
+    "umweltkrise": {
+        "name": "Umweltkrise",
+        "description": "Die Umwelt ist stark geschädigt und die Ernten fallen geringer aus. Umweltschutz "
+                       "zahlt sich langfristig aus, kostet aber zunächst Güter.",
+        "overrides": {
+            "environment": 0.50,
+            "food_available": 3000.0,
+            "last_food_production": 3000.0,
+            "cap_env": 100.0,
+        },
+    },
+    "bevoelkerungsdruck": {
+        "name": "Bevölkerungsdruck",
+        "description": "Eine größere, schnell wachsende Bevölkerung trifft auf knappe Güter. Nahrung und "
+                       "Humankapital entscheiden über ein stabiles Wachstum.",
+        "overrides": {
+            "population": 250.0,
+            "goods_pc": 1.7,
+            "last_goods_pc": 1.7,
+            "goods_pc_history": [1.7, 1.7, 1.7],
+            "food_available": 3500.0,
+            "cap_food": 860.0,
+            "cap_human": 400.0,
+        },
+    },
+}
+
+# Ereignisse: höchstens eines je Zyklus. Wirkung siehe _simulate/_finance.
+EVENTS = [
+    {"key": "duerre", "name": "Dürre", "probability": 0.08,
+     "description": "Eine Dürre senkt die Nahrungsproduktion dieses Zyklus um 25 %."},
+    {"key": "gute_ernte", "name": "Gute Ernte", "probability": 0.08,
+     "description": "Ideales Wetter steigert die Nahrungsproduktion dieses Zyklus um 15 %."},
+    {"key": "oelpreisschock", "name": "Ölpreisschock", "probability": 0.06,
+     "description": "Der Weltmarktpreis für Energie verdoppelt sich: Energieimporte kosten das Doppelte."},
+    {"key": "rohstoffboom", "name": "Rohstoffboom", "probability": 0.06,
+     "description": "Hohe Weltmarktpreise: Alle Exporterlöse dieses Zyklus steigen um 30 %."},
+    {"key": "epidemie", "name": "Epidemie", "probability": 0.05,
+     "description": "Eine Epidemie erhöht die Sterberate dieses Zyklus um 30 %."},
+    {"key": "zinsschock", "name": "Zinsschock", "probability": 0.06,
+     "description": "Die Weltmarktzinsen steigen: Der Zinssatz liegt diesen Zyklus 5 Prozentpunkte höher."},
+]
+
+_EVENTS_BY_KEY = {e["key"]: e for e in EVENTS}
+
+
+@functools.lru_cache(maxsize=4096)
+def _event_key_for(seed, runde):
+    """Deterministisches Ereignis (Schlüssel oder None) für Seed und Zyklus."""
+    roll = random.Random(f"{seed}-{runde}").random()
+    acc = 0.0
+    for ev in EVENTS:
+        acc += ev["probability"]
+        if roll < acc:
+            return ev["key"]
+    return None
+
+
+CURVE_INFO = [
+    # (Attribut, Abb., Titel, X-Beschriftung, Y-Beschriftung)
+    ("BIRTH_RATE_CURVE", 1, "Normale Geburtenrate", "Güter pro Kopf (Ø 3 Zyklen)", "Geburten pro 1000/Jahr"),
+    ("BIRTH_SERVICE_MULT_CURVE", 2, "Geburtenraten-Multiplikator", "Humankapital pro Kopf", "Multiplikator"),
+    ("DEATH_RATE_CURVE", 3, "Normale Sterberate", "Nahrung pro Kopf", "Sterbefälle pro 1000/Jahr"),
+    ("DEATH_ENV_MULT_CURVE", 4, "Sterberaten-Multiplikator", "Umweltqualität", "Multiplikator"),
+    ("ENERGY_PRODUCTION_LOW_CURVE", 5, "Energieproduktion", "Energieproduktionskapital (Tsd.)",
+     "Energie (Tsd. EW)"),
+    ("ENERGY_EFFICIENCY_CURVE", 6, "Energieverbrauch", "Effizienzkapital / Produktionskapital",
+     "Verbrauchsmultiplikator"),
+    ("FOOD_CONSUMPTION_CHANGE_CURVE", 7, "Nahrung: Konsumänderung (MFC)", "Konsum / Vorzyklus",
+     "Produktionsmultiplikator"),
+    ("FOOD_CAPITAL_CURVE", 8, "Landproduktivität", "aktives Nahrungskapital / Fläche", "Multiplikator"),
+    ("ENV_DEGRADATION_CURVE", 9, "Umweltdegradation", "Umweltbelastung (/ 20 000)", "% pro Jahr"),
+    ("ENV_REGENERATION_CURVE", 10, "Umweltregeneration", "Umweltqualität", "Prozentpunkte pro Jahr"),
+    ("GOODS_CONSUMPTION_CHANGE_CURVE", 11, "Güter: Konsumänderung (MGC)", "Konsum / Vorzyklus",
+     "Produktionsmultiplikator"),
+    ("GOODS_CAPITAL_CURVE", 12, "Arbeitsproduktivität", "aktives Güterkapital / Arbeitskraft", "Multiplikator"),
+    ("HUMAN_SERVICE_CURVE", 13, "Humankapital-Wirkung", "Humankapital pro Kopf", "Multiplikator"),
+    ("IMPORT_PRICE_MULT_CURVE", 14, "Importpreise", "Schulden / Ø Exporte", "Preismultiplikator"),
+    ("INTEREST_RATE_CURVE", 15, "Zinssatz", "Schulden / Ø Exporte", "% pro Jahr"),
+]
+
+# Investitionsmixe des Beraters: Gewichte für
+# (Nahrung, Umwelt, Güter, Human, Energieproduktion, Energieeffizienz)
+_ADVISOR_MIXES = {
+    "ausgewogen": (3, 2, 3, 2, 3, 2),
+    "Nahrung": (6, 1, 2, 1, 2, 1),
+    "Güter": (2, 1, 6, 2, 2, 1),
+    "Humankapital": (2, 1, 2, 5, 1, 1),
+    "Energie": (2, 1, 2, 1, 5, 2),
+    "Umwelt": (2, 5, 2, 1, 1, 1),
+    "Effizienz": (3, 1, 3, 1, 1, 4),
+    "Nahrung+Güter": (5, 1, 5, 1, 2, 1),
+    "Nahrung+Energie": (5, 1, 2, 1, 4, 1),
+    "Nahrung+Umwelt": (5, 3, 2, 1, 1, 1),
+}
+
+
 @dataclass
 class Issue:
     field: str | None   # Eingabeschlüssel oder None (global)
@@ -166,7 +297,7 @@ def _fmt(x):
 # Engine
 # =============================================================================
 
-class StratagemEngine:
+class EquivaraEngine:
     CYCLE_YEARS = 5
     TOTAL_CYCLES = 12
 
@@ -226,15 +357,47 @@ class StratagemEngine:
     # Abb. 15: Zinssatz pro Jahr in Prozent
     INTEREST_RATE_CURVE = [(0.0, 10.0), (1.0, 10.0), (2.0, 15.0), (3.0, 16.8), (4.0, 18.4), (5.0, 20.0)]
 
-    def __init__(self):
+    def __init__(self, scenario: str = "standard", events_enabled: bool = False, seed: int | None = None):
         self._undo = []
-        self.reset()
+        self.scenario = "standard"
+        self.events_enabled = False
+        self.seed = None
+        self.reset(scenario=scenario, events_enabled=events_enabled, seed=seed)
 
     # -------------------------------------------------------------------------
     # Zustand
     # -------------------------------------------------------------------------
 
-    def reset(self) -> None:
+    @staticmethod
+    def _random_seed() -> int:
+        return random.SystemRandom().randrange(1, 1_000_000_000)
+
+    def reset(self, scenario: str | None = None, events_enabled: bool | None = None,
+              seed: int | None = None) -> None:
+        """Startzustand herstellen.
+
+        None = bisherigen Wert behalten. Gibt es noch keinen Seed, wird ein
+        zufälliger erzeugt und gespeichert.
+        """
+        if scenario is None:
+            scenario = getattr(self, "scenario", "standard") or "standard"
+        if scenario not in SCENARIOS:
+            raise ValueError(f"Unbekanntes Szenario: {scenario!r}")
+        if events_enabled is None:
+            events_enabled = bool(getattr(self, "events_enabled", False))
+        if seed is None:
+            seed = getattr(self, "seed", None)
+            if seed is None:
+                seed = self._random_seed()
+        self.scenario = scenario
+        self.events_enabled = bool(events_enabled)
+        self.seed = int(seed)
+        self._reset_state()
+        for attr, value in SCENARIOS[scenario]["overrides"].items():
+            setattr(self, attr, copy.deepcopy(value))
+        self.history = [self._initial_record()]
+
+    def _reset_state(self) -> None:
         self.runde = 1
         self.population = 200.0
         self.food_pc = 2.0
@@ -289,16 +452,52 @@ class StratagemEngine:
         self.game_over = False
         self.last_inputs = None
         self._undo = []
-        self.history = [self._initial_record()]
+        self.history = []
 
     def _state(self) -> dict:
         return copy.deepcopy({k: v for k, v in vars(self).items() if k != "_undo"})
 
     def _restore(self, state: dict) -> None:
         undo = getattr(self, "_undo", [])
+        keep = {"scenario": getattr(self, "scenario", "standard"),
+                "events_enabled": getattr(self, "events_enabled", False),
+                "seed": getattr(self, "seed", None)}
         self.__dict__.clear()
         self.__dict__.update(copy.deepcopy(state))
         self._undo = undo
+        # Ältere Spielstände ohne Szenario/Ereignis-Felder -> Standard.
+        if getattr(self, "scenario", None) not in SCENARIOS:
+            self.scenario = keep["scenario"] if keep["scenario"] in SCENARIOS else "standard"
+        if "events_enabled" not in state:
+            self.events_enabled = bool(keep["events_enabled"])
+        if getattr(self, "seed", None) is None:
+            self.seed = keep["seed"] if keep["seed"] is not None else self._random_seed()
+
+    def _light_clone(self) -> "EquivaraEngine":
+        """Schnelle Kopie ohne Verlauf/Undo (für Berater-Simulationen)."""
+        clone = object.__new__(type(self))
+        clone.__dict__ = copy.deepcopy({k: v for k, v in vars(self).items()
+                                        if k not in ("_undo", "history", "last_inputs")})
+        clone._undo = []
+        clone.history = []
+        clone.last_inputs = None
+        return clone
+
+    # -------------------------------------------------------------------------
+    # Ereignisse
+    # -------------------------------------------------------------------------
+
+    def current_event(self) -> dict | None:
+        """Ereignis des kommenden Zyklus (self.runde); vorab bekannt."""
+        if not self.events_enabled or self.game_over:
+            return None
+        key = _event_key_for(self.seed, self.runde)
+        return dict(_EVENTS_BY_KEY[key]) if key else None
+
+    def _event_key(self):
+        if not getattr(self, "events_enabled", False) or self.game_over:
+            return None
+        return _event_key_for(self.seed, self.runde)
 
     # -------------------------------------------------------------------------
     # Hilfsfunktionen des Modells
@@ -388,9 +587,14 @@ class StratagemEngine:
         imf_paid = min(self.imf_pending, self.debt)
         debt = self.debt - imf_paid
         avg_exports, ratio, import_mult, annual_interest = self.current_finance_conditions(debt)
+        event = self._event_key()
+        if event == "zinsschock":
+            annual_interest += 5.0
         interest_due = debt * annual_interest / 100.0 * self.CYCLE_YEARS
         max_new_loan = max(0.0, avg_exports - debt)
         export_money = v["energy_export"] + v["food_export"] + v["goods_export"]
+        if event == "rohstoffboom":
+            export_money *= 1.3
         cash_in = self.cash_reserve + export_money + v["foreign_aid"] + v["new_loans"]
         repay = v["repayments"]
         after_repay = max(0.0, cash_in - repay)
@@ -697,12 +901,324 @@ class StratagemEngine:
         return zeros
 
     # -------------------------------------------------------------------------
+    # Bewertung
+    # -------------------------------------------------------------------------
+
+    # Gewichte des Scores (Summe 100):
+    #  food        30  Nahrung/Kopf: linear, volle Punkte ab 2,0 NW/Kopf
+    #  goods       20  Güter/Kopf: linear, volle Punkte ab 1,5 x Startwert
+    #  environment 20  Umweltqualität: linear, volle Punkte ab 80 %
+    #  debt        15  Schulden: volle Punkte, solange sie nicht über den Startwert
+    #                  (mind. 500) steigen; 0 Punkte bei Verdreifachung
+    #  population  15  Bevölkerungsstabilität: je zur Hälfte Größe (nicht unter
+    #                  Startbevölkerung) und Wachstum (|netto| <= 5 pro 1000/Jahr
+    #                  volle Punkte, 0 Punkte ab 25)
+    SCORE_WEIGHTS = {"food": 30, "goods": 20, "environment": 20, "debt": 15, "population": 15}
+
+    @classmethod
+    def _score_parts(cls, end: dict, start: dict) -> dict:
+        w = cls.SCORE_WEIGHTS
+
+        def g(d, k, default=0.0):
+            try:
+                return float(d.get(k, default))
+            except (TypeError, ValueError):
+                return default
+
+        food = w["food"] * clamp(g(end, "food_pc") / 2.0, 0.0, 1.0)
+        goods_ref = max(0.5, g(start, "goods_pc", 2.0)) * 1.5
+        goods = w["goods"] * clamp(g(end, "goods_pc") / goods_ref, 0.0, 1.0)
+        env = w["environment"] * clamp(g(end, "environment") / 0.8, 0.0, 1.0)
+        start_debt = max(500.0, g(start, "debt", 1000.0))
+        debt = w["debt"] * clamp(1.0 - (g(end, "debt") - start_debt) / (2.0 * start_debt), 0.0, 1.0)
+        size = clamp(g(end, "population") / max(1.0, g(start, "population", 200.0)), 0.0, 1.0)
+        stab = clamp(1.0 - max(0.0, abs(g(end, "net_growth")) - 5.0) / 20.0, 0.0, 1.0)
+        pop = w["population"] * (0.5 * size + 0.5 * stab)
+        return {"food": (food, w["food"]), "goods": (goods, w["goods"]),
+                "environment": (env, w["environment"]), "debt": (debt, w["debt"]),
+                "population": (pop, w["population"])}
+
+    def score(self) -> dict:
+        """Score 0..100 des aktuellen Zustands (siehe SCORE_WEIGHTS)."""
+        start = self.history[0] if self.history else self._initial_record()
+        end = self.history[-1] if self.history else start
+        parts = self._score_parts(end, start)
+        total = clamp(sum(p for p, _ in parts.values()), 0.0, 100.0)
+        if total >= 85:
+            grade = "A"
+        elif total >= 70:
+            grade = "B"
+        elif total >= 55:
+            grade = "C"
+        elif total >= 40:
+            grade = "D"
+        elif total >= 25:
+            grade = "E"
+        else:
+            grade = "F"
+        names = {"food": "Nahrungsversorgung", "goods": "Güterversorgung", "environment": "Umweltqualität",
+                 "debt": "Verschuldung", "population": "Bevölkerungsstabilität"}
+        weakest = min(parts, key=lambda k: parts[k][0] / parts[k][1])
+        strongest = max(parts, key=lambda k: parts[k][0] / parts[k][1])
+        lead = {"A": "Hervorragend regiert.", "B": "Gut regiert.", "C": "Solide, mit Schwächen.",
+                "D": "Durchwachsen.", "E": "Das Land steckt in Schwierigkeiten.",
+                "F": "Kritischer Zustand."}[grade]
+        if parts[weakest][0] >= parts[weakest][1] - 1e-9:
+            comment = f"{lead} Alle Bereiche erreichen die volle Punktzahl."
+        else:
+            comment = (f"{lead} Stärke: {names[strongest]}. "
+                       f"Größtes Verbesserungspotenzial: {names[weakest]}.")
+        return {"total": total, "grade": grade, "parts": parts, "comment": comment}
+
+    # -------------------------------------------------------------------------
+    # Berater
+    # -------------------------------------------------------------------------
+
+    _ADVISOR_HORIZON = 8   # Vorausschau in Zyklen (stationäre Strategie)
+
+    _ADVISOR_DIMS = [
+        ("fc", [2.0, 2.2, 2.5, 3.0, 1.8]),             # Nahrung pro Kopf (Ziel)
+        ("gf", [1.0, 1.1, 1.25, 1.5, 0.9, 0.75]),       # Güterkonsum relativ zum Vorzyklus
+        ("gx", [0.0, 0.15, 0.3]),                      # Anteil Güterüberschuss für Export
+        ("ef", [1.0, 1.1, 0.85]),                      # Energie relativ zum Bedarf
+        ("em", ["carry", "export", "split"]),          # Energie-Rest
+        ("mix", list(_ADVISOR_MIXES)),                 # Investitionsmix
+        ("fin", ["reserve", "repay", "food", "goods", "energy", "repay_food", "loan_food"]),
+    ]
+
+    def _advisor_inputs(self, p: dict) -> dict:
+        """Baut Eingaben aus Beraterparametern für den aktuellen Zustand."""
+        v = {k: 0.0 for k in INPUT_KEYS}
+        pop = max(1.0, self.population)
+        food_av = self.food_available
+        v["food_domestic"] = _floor10(min(food_av, p["fc"] * pop * 5.0))
+        v["food_export"] = _floor10(food_av - v["food_domestic"])
+
+        g_av, e_av = self.goods_available, self.energy_available
+        gd = _floor10(min(0.85 * g_av, p["gf"] * max(self.goods_pc, 0.3) * pop * 5.0, e_av * 5.0))
+        rest = g_av - gd
+        v["goods_domestic"] = gd
+        v["goods_export"] = _floor10(rest * p["gx"])
+        v["goods_investment"] = _floor10(rest - v["goods_export"])
+
+        e_rest = e_av - gd / 5.0
+        food_req, goods_req, _ = self.full_energy_requirements()
+        need_f, need_g = food_req * p["ef"], goods_req * p["ef"]
+        if need_f + need_g > e_rest > 0:
+            f = e_rest / (need_f + need_g)
+            need_f, need_g = need_f * f, need_g * f
+        v["energy_food"] = _floor10(min(need_f, e_rest))
+        v["energy_goods"] = _floor10(min(need_g, e_rest - v["energy_food"]))
+        r = _floor10(e_rest - v["energy_food"] - v["energy_goods"])
+        if p["em"] == "export":
+            v["energy_export"] = r
+        elif p["em"] == "split":
+            v["energy_export"] = _floor10(r / 2.0)
+            v["energy_carryover"] = _floor10(r - v["energy_export"])
+        else:
+            v["energy_carryover"] = r
+
+        gi = v["goods_investment"]
+        weights = _ADVISOR_MIXES[p["mix"]]
+        wsum = float(sum(weights))
+        for k, w in zip(INVEST_KEYS, weights):
+            v[k] = _floor10(gi * w / wsum)
+        v["inv_energy_eff"] = min(v["inv_energy_eff"], v["inv_food"] + v["inv_goods"])
+        rest = _floor10(gi - sum(v[k] for k in INVEST_KEYS))
+        if rest > 0:
+            others = [k for k in INVEST_KEYS if k != "inv_energy_eff"]
+            v[max(others, key=lambda k: v[k])] += rest
+
+        fin_mode = p["fin"]
+        if fin_mode == "loan_food":
+            fin = self._finance(v)
+            v["new_loans"] = _floor10(fin["max_new_loan"])
+        fin = self._finance(v)
+        budget = _floor10(fin["import_budget"])
+        if fin_mode == "repay":
+            v["repayments"] = _floor10(min(budget, fin["debt_start"]))
+        elif fin_mode == "repay_food":
+            v["repayments"] = _floor10(min(budget / 2.0, fin["debt_start"]))
+            v["import_food_money"] = _floor10(budget - v["repayments"])
+        elif fin_mode in ("food", "loan_food"):
+            v["import_food_money"] = budget
+        elif fin_mode == "goods":
+            v["import_goods_money"] = budget
+        elif fin_mode == "energy":
+            v["import_energy_money"] = budget
+        return v
+
+    def _advisor_value(self, res: dict, start: dict) -> float:
+        """Bewertung eines (simulierten) Zustands: Score + zukünftige Kapazität."""
+        value = sum(p for p, _ in self._score_parts(res, start).values())
+        # Schuldenspirale zusätzlich bestrafen (der Score-Anteil ist bei 0 gedeckelt).
+        value -= 8.0 * math.log1p(max(0.0, self.current_finance_conditions()[1] - 1.5))
+        if not self.game_over:
+            pop = max(1.0, self.population)
+            value += 20.0 * clamp(self.food_available / (pop * 5.0 * 2.0), 0.0, 1.25)
+            value += 8.0 * clamp(self.goods_available / (pop * 5.0) / 4.0, 0.0, 1.25)
+            food_req, goods_req, pop_req = self.full_energy_requirements()
+            value += 4.0 * clamp(self.energy_available / max(1.0, food_req + goods_req + pop_req), 0.0, 1.0)
+        return value
+
+    def _advisor_rollout(self, p: dict, first: dict, start: dict, horizon: int) -> float:
+        eng = self._light_clone()
+        res = eng._simulate(first)
+        eng.events_enabled = False   # nur das kommende Ereignis ist bekannt
+        for _ in range(horizon):
+            if eng.game_over:
+                break
+            inp = eng._advisor_inputs(p)
+            if any(i.severity == "error" for i in eng.validate(inp)):
+                inp = eng.suggest_inputs(inp)
+            res = eng._simulate(inp)
+        return eng._advisor_value(res, start)
+
+    def advise_inputs(self) -> tuple[dict, list[str]]:
+        """Berater: sucht per Simulation die beste von vielen zulässigen Varianten.
+
+        Die Kandidaten werden über Parameter (Nahrung/Kopf, Güterkonsum,
+        Güterexport, Energieeinsatz, Energierest, Investitionsmix, Finanzen)
+        erzeugt; jede Variante wird über einige Zyklen vorausgerechnet
+        (Koordinatensuche) und nach Score + zukünftiger Kapazität bewertet.
+        """
+        zeros = {k: 0.0 for k in INPUT_KEYS}
+        if self.game_over:
+            return zeros, ["Das Spiel ist beendet – keine Eingaben mehr nötig."]
+        start = self.history[0] if self.history else self._initial_record()
+        horizon = self._ADVISOR_HORIZON
+        cache = {}
+
+        def evaluate(p):
+            key = tuple(sorted(p.items()))
+            if key in cache:
+                return cache[key]
+            inp = self._advisor_inputs(p)
+            if any(i.severity == "error" for i in self.validate(inp)):
+                val = None
+            else:
+                val = self._advisor_rollout(p, inp, start, horizon)
+            cache[key] = val
+            return val
+
+        best = {name: opts[0] for name, opts in self._ADVISOR_DIMS}
+        best["mix"] = "ausgewogen"
+        best_val = evaluate(best)
+        if best_val is None:
+            best_val = -math.inf
+        for _ in range(3):
+            improved = False
+            for name, opts in self._ADVISOR_DIMS:
+                for o in opts:
+                    if o == best[name]:
+                        continue
+                    q = dict(best, **{name: o})
+                    val = evaluate(q)
+                    if val is not None and val > best_val + 1e-9:
+                        best, best_val, improved = q, val, True
+            if not improved:
+                break
+
+        if best_val == -math.inf:
+            inp = self.suggest_inputs()
+            return inp, ["Keine bessere Variante gefunden – Standardvorschlag übernommen."]
+        inp = self._advisor_inputs(best)
+        return inp, self._advisor_reasons(inp, best)
+
+    def _advisor_reasons(self, v: dict, p: dict) -> list[str]:
+        pop = max(1.0, self.population)
+        out = []
+        ev = self.current_event()
+        if ev:
+            out.append(f"Ereignis „{ev['name']}“ im kommenden Zyklus berücksichtigt: {ev['description']}")
+        out.append(f"Nahrung: {_fmt(v['food_domestic'])} NW für die Bevölkerung "
+                   f"({v['food_domestic'] / pop / 5:.2f} NW/Kopf, Ziel ≥ 2,0); "
+                   f"{_fmt(v['food_export'])} NW Überschuss werden exportiert.")
+        out.append(f"Güter: {_fmt(v['goods_domestic'])} GW Konsum ({v['goods_domestic'] / pop / 5:.2f} GW/Kopf, "
+                   f"Vorzyklus {self.goods_pc:.2f}), {_fmt(v['goods_investment'])} GW Investitionen"
+                   + (f", {_fmt(v['goods_export'])} GW Export." if v["goods_export"] > 0 else "."))
+        food_req, goods_req, _ = self.full_energy_requirements()
+        rest = []
+        if v["energy_export"] > 0:
+            rest.append(f"{_fmt(v['energy_export'])} EW Export")
+        if v["energy_carryover"] > 0:
+            rest.append(f"{_fmt(v['energy_carryover'])} EW Carry-over")
+        out.append(f"Energie: Nahrung {v['energy_food'] / max(1.0, food_req) * 100:.0f} %, "
+                   f"Güter {v['energy_goods'] / max(1.0, goods_req) * 100:.0f} % des Bedarfs"
+                   + (f"; Rest: {', '.join(rest)}." if rest else "."))
+        out.append(f"Investitionen: Schwerpunkt „{p['mix']}“ – "
+                   + ", ".join(f"{INPUT_LABELS[k].replace('Investition ', '')} {_fmt(v[k])}"
+                               for k in INVEST_KEYS if v[k] > 0) + ".")
+        fin_text = {
+            "reserve": "Devisen bleiben als Reserve für den nächsten Zyklus.",
+            "repay": f"Freie Devisen tilgen Schulden ({_fmt(v['repayments'])}).",
+            "food": f"Freie Devisen für Nahrungsimporte ({_fmt(v['import_food_money'])}).",
+            "goods": f"Freie Devisen für Güterimporte ({_fmt(v['import_goods_money'])}).",
+            "energy": f"Freie Devisen für Energieimporte ({_fmt(v['import_energy_money'])}).",
+            "repay_food": f"Devisen je zur Hälfte für Tilgung ({_fmt(v['repayments'])}) und "
+                          f"Nahrungsimporte ({_fmt(v['import_food_money'])}).",
+            "loan_food": f"Neuer Kredit ({_fmt(v['new_loans'])}) finanziert Nahrungsimporte "
+                         f"({_fmt(v['import_food_money'])}).",
+        }[p["fin"]]
+        out.append(f"Finanzen: {fin_text}")
+        res = self.preview(v)
+        if res is not None:
+            out.append(f"Prognose: Bevölkerung {res['population']:.0f}, Nahrung/Kopf {res['food_pc']:.2f}, "
+                       f"Güter/Kopf {res['goods_pc']:.2f}, Umwelt {res['environment'] * 100:.0f} %, "
+                       f"Schulden {_fmt(res['debt'])}.")
+        return out
+
+    # -------------------------------------------------------------------------
+    # Kennlinien
+    # -------------------------------------------------------------------------
+
+    def curve_positions(self) -> list[dict]:
+        """Alle 15 Kennlinien mit aktuellem Arbeitspunkt (x, y)."""
+        prod_cap = self.cap_food + self.cap_goods
+        ratio = self.current_finance_conditions()[1]
+        load = max(0.0, self.active_food_capital + self.active_goods_capital + self.cap_energy_prod
+                   - 3.0 * self.cap_env)
+        xs = {
+            "BIRTH_RATE_CURVE": sum(self.goods_pc_history) / len(self.goods_pc_history),
+            "BIRTH_SERVICE_MULT_CURVE": self.human_services_pc,
+            "DEATH_RATE_CURVE": self.food_pc,
+            "DEATH_ENV_MULT_CURVE": self.environment,
+            "ENERGY_PRODUCTION_LOW_CURVE": self.cap_energy_prod / 1000.0,
+            "ENERGY_EFFICIENCY_CURVE": (self.cap_energy_eff / prod_cap) if prod_cap > 0 else None,
+            "FOOD_CONSUMPTION_CHANGE_CURVE": self.food_pc / self.last_food_pc if self.last_food_pc > 0 else None,
+            "FOOD_CAPITAL_CURVE": self.active_food_capital / self.LAND_AREA,
+            "ENV_DEGRADATION_CURVE": load / 20000.0,
+            "ENV_REGENERATION_CURVE": self.environment,
+            "GOODS_CONSUMPTION_CHANGE_CURVE":
+                self.goods_pc / self.last_goods_pc if self.last_goods_pc > 0 else None,
+            "GOODS_CAPITAL_CURVE": self.active_goods_capital / max(1.0, self.labor_force),
+            "HUMAN_SERVICE_CURVE": self.human_services_pc,
+            "IMPORT_PRICE_MULT_CURVE": ratio,
+            "INTEREST_RATE_CURVE": ratio,
+        }
+        out = []
+        for key, fig, title, x_label, y_label in CURVE_INFO:
+            points = [(float(a), float(b)) for a, b in getattr(self, key)]
+            x = xs.get(key)
+            y = None
+            if x is not None and math.isfinite(x):
+                x = clamp(float(x), points[0][0], points[-1][0])
+                y = interp(x, points)
+            else:
+                x = None
+            out.append({"key": key, "figure": fig, "title": title, "x_label": x_label,
+                        "y_label": y_label, "points": points, "x": x, "y": y})
+        return out
+
+    # -------------------------------------------------------------------------
     # Hauptsimulation (nur auf validierten Eingaben aufrufen)
     # -------------------------------------------------------------------------
 
     def _simulate(self, x: dict) -> dict:
         # Finanzrechnung zuerst – reine Funktion des Anfangszustands.
         fin = self._finance(x)
+        event_key = self._event_key()
+        event = dict(_EVENTS_BY_KEY[event_key]) if event_key else None
 
         food_domestic = x["food_domestic"]
         goods_domestic = x["goods_domestic"]
@@ -728,6 +1244,10 @@ class StratagemEngine:
         food_mfp = interp(active_food_for_output / self.LAND_AREA, self.FOOD_CAPITAL_CURVE)
         expected_food = self.expected_food_production(food_mfc=food_mfc, food_mfp=food_mfp)
         produced_food = max(0.0, expected_food * food_cu)
+        if event_key == "duerre":
+            produced_food *= 0.75
+        elif event_key == "gute_ernte":
+            produced_food *= 1.15
 
         goods_mgp = interp(active_goods_for_output / max(1.0, self.labor_force), self.GOODS_CAPITAL_CURVE)
         goods_mhs = interp(self.human_services_pc, self.HUMAN_SERVICE_CURVE)
@@ -754,6 +1274,8 @@ class StratagemEngine:
         normal_death = self.normal_death_rate(current_food_pc)
         death_mult = self.death_environment_multiplier()
         actual_death = normal_death * death_mult
+        if event_key == "epidemie":
+            actual_death *= 1.3
         annual_growth = (actual_birth - actual_death) / 1000.0
         self.population = max(1.0, self.population * math.exp(annual_growth * self.CYCLE_YEARS))
 
@@ -761,7 +1283,8 @@ class StratagemEngine:
         imf_paid_this_cycle = fin["imf_paid"]
         self.imf_pending = 0.0
         import_mult = fin["import_mult"]
-        energy_import_units = x["import_energy_money"] / max(0.0001, 1.0 * import_mult)
+        energy_price = 2.0 if event_key == "oelpreisschock" else 1.0
+        energy_import_units = x["import_energy_money"] / max(0.0001, energy_price * import_mult)
         food_import_units = x["import_food_money"] / max(0.0001, 1.1 * import_mult)
         goods_import_units = x["import_goods_money"] / max(0.0001, 1.1 * import_mult)
         import_spending = fin["imports"]
@@ -916,6 +1439,8 @@ class StratagemEngine:
             "gdp_pc": self.gdp_pc_index,
 
             "game_over": self.game_over,
+            "event": event,
+            "scenario": self.scenario,
         }
 
     def _initial_record(self) -> dict:
@@ -955,6 +1480,8 @@ class StratagemEngine:
             "cap_human": self.cap_human, "cap_env": self.cap_env,
             "gdp": self.gdp_index, "gdp_pc": self.gdp_pc_index,
             "game_over": False,
+            "event": None,
+            "scenario": self.scenario,
         }
 
     # -------------------------------------------------------------------------
@@ -962,15 +1489,15 @@ class StratagemEngine:
     # -------------------------------------------------------------------------
 
     def to_json(self) -> str:
-        return json.dumps({"format": "stratagem-engine", "version": 1,
+        return json.dumps({"format": "equivara-engine", "version": 2,
                            "state": self._state(), "undo": self._undo},
                           ensure_ascii=False, sort_keys=True)
 
     @classmethod
-    def from_json(cls, s: str) -> "StratagemEngine":
+    def from_json(cls, s: str) -> "EquivaraEngine":
         data = json.loads(s)
         if not isinstance(data, dict) or "state" not in data:
-            raise ValueError("Ungültige STRATAGEM-Spielstanddatei.")
+            raise ValueError("Ungültige Equivara-Spielstanddatei.")
         eng = cls()
         eng._restore(data["state"])
         eng._undo = list(data.get("undo", []))

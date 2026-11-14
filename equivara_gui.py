@@ -1,21 +1,21 @@
-"""STRATAGEM 1 – Tkinter-Oberfläche.
+"""Equivara – Tkinter-Oberfläche.
 
-Nutzt ausschließlich die öffentliche API von ``stratagem_engine`` und die
-Widgets aus ``stratagem_widgets`` (siehe CONTRACT, Abschnitt 1 und 2).
+Nutzt ausschließlich die öffentliche API von ``equivara_engine`` und die
+Widgets aus ``equivara_widgets`` (siehe CONTRACT, Abschnitt 1 und 2).
 """
 
 import csv
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from stratagem_engine import (
+from equivara_engine import (
     DEFAULT_INPUTS,
     INPUT_KEYS,
     INPUT_LABELS,
     INVEST_KEYS,
-    StratagemEngine,
+    EquivaraEngine,
 )
-from stratagem_widgets import (
+from equivara_widgets import (
     THEME,
     BudgetBar,
     HistoryTable,
@@ -237,19 +237,19 @@ class ScrollFrame(tk.Frame):
 # ---------------------------------------------------------------------------
 # Hauptfenster
 # ---------------------------------------------------------------------------
-class StratagemGUI:
-    """Tkinter-Frontend für die STRATAGEM-Engine."""
+class EquivaraGUI:
+    """Tkinter-Frontend für die Equivara-Engine."""
 
     COLORS = C
 
     def __init__(self, root, engine=None):
         self.root = root
-        self.root.title("STRATAGEM 1  |  System Dynamics Simulation")
+        self.root.title("Equivara  |  System Dynamics Simulation")
         self.root.geometry("1280x800")
         self.root.minsize(1100, 700)
         self.root.configure(bg=C["bg"])
 
-        self.engine = engine or StratagemEngine()
+        self.engine = engine or EquivaraEngine()
         self.vars = {}
         self.field_frames = {}
         self.field_msgs = {}
@@ -308,8 +308,8 @@ class StratagemGUI:
 
         brand = tk.Frame(self.sidebar, bg=SIDEBAR_BG)
         brand.pack(fill=tk.X, padx=20, pady=(22, 22))
-        tk.Label(brand, text="STRATAGEM", bg=SIDEBAR_BG, fg=C["text"], font=(FONT, 19, "bold")).pack(anchor="w")
-        tk.Label(brand, text="SYSTEM DYNAMICS  •  1", bg=SIDEBAR_BG, fg=C["blue"],
+        tk.Label(brand, text="EQUIVARA", bg=SIDEBAR_BG, fg=C["text"], font=(FONT, 19, "bold")).pack(anchor="w")
+        tk.Label(brand, text="SYSTEM DYNAMICS SIMULATION", bg=SIDEBAR_BG, fg=C["blue"],
                  font=(FONT, 9, "bold")).pack(anchor="w", pady=(2, 0))
 
         self.nav_buttons = {}
@@ -971,7 +971,7 @@ class StratagemGUI:
     def save_game(self):
         path = filedialog.asksaveasfilename(parent=self.root, title="Spielstand speichern",
                                             defaultextension=".json",
-                                            filetypes=[("STRATAGEM-Spielstand", "*.json"), ("Alle Dateien", "*.*")])
+                                            filetypes=[("Equivara-Spielstand", "*.json"), ("Alle Dateien", "*.*")])
         if not path:
             return
         try:
@@ -984,12 +984,12 @@ class StratagemGUI:
 
     def load_game(self):
         path = filedialog.askopenfilename(parent=self.root, title="Spielstand laden",
-                                          filetypes=[("STRATAGEM-Spielstand", "*.json"), ("Alle Dateien", "*.*")])
+                                          filetypes=[("Equivara-Spielstand", "*.json"), ("Alle Dateien", "*.*")])
         if not path:
             return
         try:
             with open(path, "r", encoding="utf-8") as fh:
-                engine = StratagemEngine.from_json(fh.read())
+                engine = EquivaraEngine.from_json(fh.read())
         except Exception as exc:  # defekte Datei, falsches Format …
             messagebox.showerror("Laden fehlgeschlagen", f"Die Datei konnte nicht geladen werden:\n{exc}",
                                  parent=self.root)
@@ -1157,7 +1157,7 @@ class StratagemGUI:
 
 def main():
     root = tk.Tk()
-    StratagemGUI(root)
+    EquivaraGUI(root)
     root.mainloop()
 
 

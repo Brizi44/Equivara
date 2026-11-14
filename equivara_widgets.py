@@ -1,5 +1,5 @@
 """
-stratagem_widgets.py - Canvas-Diagramme und Widgets fuer die STRATAGEM-Oberflaeche.
+equivara_widgets.py - Canvas-Diagramme und Widgets fuer die Equivara-Oberflaeche.
 
 Nur tkinter / Standardbibliothek, keine Abhaengigkeit zur Engine.
 
@@ -833,7 +833,7 @@ def _scrollbar_styles(widget) -> tuple[str, str]:
     """Dunkle ttk-Scrollbar-Stile (wirken im 'clam'-Theme; sonst Standardoptik)."""
     c = THEME
     style = ttk.Style(widget)
-    names = ("Stratagem.Vertical.TScrollbar", "Stratagem.Horizontal.TScrollbar")
+    names = ("Equivara.Vertical.TScrollbar", "Equivara.Horizontal.TScrollbar")
     for n in names:
         try:
             style.configure(n, background=c["panel2"], troughcolor=c["bg"], bordercolor=c["bg"],
@@ -1036,7 +1036,7 @@ class HistoryTable(tk.Frame):
 def _demo(root: tk.Tk) -> dict:
     """Baut ein Demofenster mit allen Widgets auf und gibt die Widgets zurueck."""
     c = THEME
-    root.title("stratagem_widgets – Demo")
+    root.title("equivara_widgets – Demo")
     root.configure(bg=c["bg"])
     root.geometry("1280x800")
 
