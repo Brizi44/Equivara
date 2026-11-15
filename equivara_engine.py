@@ -1541,6 +1541,9 @@ class EquivaraEngine:
 
     def _advisor_rollout(self, p: dict, first: dict, start: dict, horizon: int) -> float:
         eng = self._light_clone()
+        # Da man nach dem Ziel weiterspielen kann, plant der Berater über das Ziel
+        # hinaus – sonst würden im letzten Zyklus vor dem Ziel alle Bestände verbraucht.
+        eng.goal_cycles = None
         res = eng._simulate(first)
         eng.events_enabled = False   # nur das kommende Ereignis ist bekannt
         for _ in range(horizon):
