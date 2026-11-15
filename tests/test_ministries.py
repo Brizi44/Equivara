@@ -25,21 +25,23 @@ MINISTRY_RECORD_KEYS = {"cap_health", "cap_education", "cap_infrastructure", "ca
 # Schlüssel, die nach der Erweiterung neu in den Ergebnis-Dicts sind (für den Bitvergleich ignoriert)
 NEW_RECORD_KEYS = MINISTRY_RECORD_KEYS | {"infra_energy_mult", "defense_labor_share", "ministries"}
 
-# Referenz-Fingerabdrücke, erzeugt mit dem Engine-Stand VOR Einführung der Ministerien:
+# Referenz-Fingerabdrücke mit allen Ministerien AUS. Ursprünglich mit dem Engine-Stand VOR Einführung der
+# Ministerien erzeugt; am 15.11.2026 neu erzeugt, weil der Berater seither über das Ziel hinaus plant
+# (Modellrechnung unverändert, nur die Berater-Eingaben ändern sich):
 # 12 Runden advise_inputs je Szenario; sha256 über alle Eingaben + komplette history (alte Schlüssel).
 REFERENCE = {
-    ("standard", False, 3): "c8d1e684dd0e7d1a937832df0905439ecd3c045ac2c88c11cf5d3235badddce9",
-    ("standard", True, 7): "a48f54dd92c772ce130412749fdc16aa5a9c5bf7245ec78277395ce92b0d1d94",
-    ("verschuldet", False, 3): "aba6da39d81d863c3e719594ce1bbe027ed184c05a2489260030238f96ee40ef",
-    ("verschuldet", True, 7): "914ff9f185d8d67c445936f995c29f13eed0e11cfa9a68ff90b50424bb0db325",
-    ("energiearm", False, 3): "79bb0214ab4b12ae7ac244300fdfbd288c9fd01da0580c8cae1561d3603d3ebb",
-    ("energiearm", True, 7): "e5c26c65ff854057cd8cd4529930dc4854064a7a0ba09f0dad1ce12ec5d1996f",
-    ("umweltkrise", False, 3): "d2c6e2ff6e9c7df6566e4afb06715c9d9e3d00fb1f4cda47d7f6107dc36bd1b4",
-    ("umweltkrise", True, 7): "860fc7e9977610a4c499300f937ce763e35065a140549826f710c8695a7cc0f1",
-    ("bevoelkerungsdruck", False, 3): "52e9ba8bcdab4755acc405f864947ee6b4bbde09f5eed934132d9ec6edb877ce",
-    ("bevoelkerungsdruck", True, 7): "6b4f5e84898e53aeed9663777bd6454d9672a5c75b23ea918498ca595bc4be7f",
+    ("standard", False, 3): "318ab12e9bc64e3dc078925b257da8a82e6170627f4b9e391092479c64c54f9a",
+    ("standard", True, 7): "6353fa57c1b5c07fd62c46bec1ad1b9d6b3d9e2e15a751bf655bbb8a6e28e3c6",
+    ("verschuldet", False, 3): "7dcffcab3050519f1fe0b80fffead0eadf043738aac37e82dd5890537c76634d",
+    ("verschuldet", True, 7): "7f7e4b55b3762ba24fd460cb4ccbc8cd29f00dcdca22e1f67d91a4664f2fbc7c",
+    ("energiearm", False, 3): "14dee4641f3a80d505dd9727618a4c9de390495e1c8c350ee481c36ca821f1c5",
+    ("energiearm", True, 7): "b0890036846f004e19e1425790a1569a6477660020871e18a184e4b25846541e",
+    ("umweltkrise", False, 3): "92fd73fe00e9f2a2f6d47017e095d234e94ba516324e80b4e075b9481cfd6710",
+    ("umweltkrise", True, 7): "3ecf0f5712a9ed1a1cf4b03840d010658c1b7900bef6c6f4943ddce7f35bd6be",
+    ("bevoelkerungsdruck", False, 3): "347b46f596a056b6da16ed6ffcf43c5948c4ff5331ecdf7247cfb8ac309b8f74",
+    ("bevoelkerungsdruck", True, 7): "ee25bd7d1d8dadd6d598ed103c15fa3dd8501ccc62a1598f0c590092cb8ee3d4",
 }
-REFERENCE_SCORE = {("standard", False, 3): 96.49185, ("standard", True, 7): 97.526933}
+REFERENCE_SCORE = {("standard", False, 3): 90.93084, ("standard", True, 7): 96.149437}
 
 # Echter Spielstand im alten Engine-Format (Version 2: Standard, Ereignisse an, Seed 5,
 # eine Runde suggest_inputs), zlib + base64.

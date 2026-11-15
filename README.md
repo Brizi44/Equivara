@@ -10,6 +10,11 @@ Rückkopplungen aufeinander. Ziel ist ein stabiles Gleichgewicht statt kurzfrist
 - **Live-Anzeige:** Budgetbalken, Prognose für den nächsten Zyklus und Warnungen, während du tippst
 - **Diagramme:** Verlauf aller wichtigen Kennzahlen, Kapitalstöcke, Kennlinien mit aktuellem Arbeitspunkt
 - **Wirkungsgefüge:** die Rückkopplungsschleifen des Modells, hervorgehoben nach aktuellem Zustand
+- **Ziel einstellbar:** 20 bis 200 Jahre oder endlos (Standard 60 Jahre); nach dem Ziel kann man weiterspielen
+- **Ministerien:** Gesundheit, Bildung & Forschung, Infrastruktur, Verteidigung – in den Einstellungen einzeln abschaltbar
+- **Mehrspieler am selben PC:** Wettbewerb, Handel über einen gemeinsamen Weltmarkt mit Preisbildung, Rollen
+  (jede Person steuert ein Ressort, das Präsidium gibt frei)
+- **Hex-Karten:** symbolische Landkarte, die mit deinen Kapitalstöcken wächst, und Weltkarte mit Handelsflüssen
 - **Szenarien und Ereignisse:** verschiedene Startlagen, zufällige Ereignisse (abschaltbar, mit Seed reproduzierbar)
 - **Berater:** schlägt eine durchgerechnete Strategie mit Begründung vor
 - **Bericht:** Verlaufstabelle, CSV-Export, HTML-Bericht (im Browser als PDF speicherbar)
@@ -38,7 +43,10 @@ python -m pytest tests -q
 | `equivara_engine.py` | Simulationsmodell (ohne GUI, testbar) |
 | `equivara_gui.py` | Oberfläche (Tkinter) |
 | `equivara_widgets.py` | Diagramme und UI-Bausteine |
+| `equivara_dialogs.py` | Dialoge: Neues Spiel, Einstellungen, Spielerwechsel |
 | `equivara_views.py` | Kennlinien, Wirkungsgefüge, Vergleich, Bestenliste, Tutorial |
+| `equivara_world.py` | Mehrspieler: Länder, Weltmarkt, Rollen |
+| `equivara_map.py` | Hex-Landkarte und Weltkarte |
 | `equivara_export.py` | HTML-/PDF-Bericht |
 | `equivara_store.py` | Bestenliste und Einstellungen (`~/.equivara/`) |
 | `tests/` | pytest-Tests |
