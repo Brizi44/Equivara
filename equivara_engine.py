@@ -39,6 +39,7 @@ from dataclasses import dataclass
 __all__ = [
     "INPUT_KEYS", "INPUT_LABELS", "INVEST_KEYS", "DEFAULT_INPUTS",
     "SCENARIOS", "EVENTS", "CURVE_INFO",
+    "MINISTRIES", "MINISTRY_INPUT_KEYS", "ALL_INPUT_KEYS", "ALL_INPUT_LABELS", "DEFAULT_MARKET",
     "Issue", "EquivaraEngine", "clamp", "interp",
 ]
 
@@ -113,6 +114,121 @@ DEFAULT_INPUTS = {
 }
 
 TOL = 1e-7
+
+
+# =============================================================================
+# Ministerien (optional, Standard: alle aus)
+# =============================================================================
+#
+# Die vier Ministerien sind EIGENE Erweiterungen von Equivara (nicht Teil des
+# STRATAGEM-1-Kurzhandbuchs). Ihre Kennlinien sind plausible Näherungen, die so
+# gewählt sind, dass ein "kleiner Startbestand" ungefähr neutral wirkt und
+# volle Investitionen spürbar, aber nicht spielentscheidend helfen.
+# Sind alle Ministerien aus, verhält sich das Modell bitgenau wie zuvor
+# (alle neuen Wirkungen sind dann nicht nur 1.0, sondern werden gar nicht
+# erst angewendet).
+
+MINISTRIES = {
+    "gesundheit": {
+        "name": "Gesundheit",
+        "description": "Kliniken und Gesundheitsdienste senken die Sterberate und mildern Epidemien.",
+        "input_key": "inv_health", "capital_attr": "cap_health",
+        "lifetime": 30, "delay_cycles": 1, "color_hint": "red",
+    },
+    "bildung": {
+        "name": "Bildung",
+        "description": "Schulen und Universitäten steigern verzögert die Güterproduktivität, senken die "
+                       "Geburtenrate leicht und verstärken die Wirkung von Energieeffizienz.",
+        "input_key": "inv_education", "capital_attr": "cap_education",
+        "lifetime": 45, "delay_cycles": 2, "color_hint": "purple",
+    },
+    "infrastruktur": {
+        "name": "Infrastruktur",
+        "description": "Straßen, Netze und Logistik senken den Energiebedarf der Produktion; zu wenig "
+                       "Infrastruktur bremst die Produktion, genug beschleunigt sie.",
+        "input_key": "inv_infrastructure", "capital_attr": "cap_infrastructure",
+        "lifetime": 40, "delay_cycles": 2, "color_hint": "orange",
+    },
+    "verteidigung": {
+        "name": "Verteidigung",
+        "description": "Sicherheit dämpft die Folgen negativer Ereignisse, bindet aber Arbeitskräfte.",
+        "input_key": "inv_defense", "capital_attr": "cap_defense",
+        "lifetime": 20, "delay_cycles": 1, "color_hint": "blue",
+    },
+}
+
+MINISTRY_INPUT_KEYS = [m["input_key"] for m in MINISTRIES.values()]
+ALL_INPUT_KEYS = INPUT_KEYS + MINISTRY_INPUT_KEYS
+_MINISTRY_BY_INPUT = {m["input_key"]: key for key, m in MINISTRIES.items()}
+
+MINISTRY_INPUT_LABELS = {
+    "inv_health": "Investition Gesundheit",
+    "inv_education": "Investition Bildung",
+    "inv_infrastructure": "Investition Infrastruktur",
+    "inv_defense": "Investition Verteidigung",
+}
+
+
+class _InputLabels(dict):
+    """INPUT_LABELS: enthält per Zugriff ([], get, in) auch die Ministeriums-Schlüssel.
+
+    Beim Iterieren (keys/items/set(...)) erscheinen weiterhin nur die 21
+    Grundschlüssel – bestehender Code, der über INPUT_LABELS iteriert, bleibt
+    unverändert. Vollständige Iteration: ALL_INPUT_LABELS.
+    """
+
+    def __missing__(self, key):
+        return MINISTRY_INPUT_LABELS[key]
+
+    def get(self, key, default=None):
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        return MINISTRY_INPUT_LABELS.get(key, default)
+
+    def __contains__(self, key):
+        return dict.__contains__(self, key) or key in MINISTRY_INPUT_LABELS
+
+
+INPUT_LABELS = _InputLabels(INPUT_LABELS)
+ALL_INPUT_LABELS = dict(INPUT_LABELS, **MINISTRY_INPUT_LABELS)
+
+# Vorschlagswerte für Ministeriums-Investitionen (suggest_inputs ohne Vorgabe)
+MINISTRY_DEFAULT_INPUTS = {k: 100.0 for k in MINISTRY_INPUT_KEYS}
+
+# Startbestände bei aktivem Ministerium (Szenario "standard", 200 Einwohner).
+# Gesundheit/Bildung/Verteidigung skalieren mit der Bevölkerung, Infrastruktur
+# mit dem Produktionskapital (Nahrung + Güter): Verhältnis 0.3 = neutral.
+MINISTRY_START = {"cap_health": 100.0, "cap_education": 100.0, "cap_defense": 50.0}
+MINISTRY_INFRA_START_RATIO = 0.30
+# Szenario-Faktor auf die Startbestände (verschuldete Länder starten ärmer).
+MINISTRY_SCENARIO_FACTOR = {"standard": 1.0, "verschuldet": 0.7, "energiearm": 0.9,
+                            "umweltkrise": 0.9, "bevoelkerungsdruck": 0.8}
+
+DEFAULT_MARKET = {"export_price": {"food": 1.0, "goods": 1.0, "energy": 1.0},
+                  "import_price": {"food": 1.1, "goods": 1.1, "energy": 1.0}}
+
+class _Requirements(dict):
+    """Ergebnis von requirements(): req["market"] / req.get("market") / "market" in req
+    liefern die Marktpreise, beim Iterieren erscheinen weiterhin nur die bisherigen
+    Schlüssel (Rückwärtskompatibilität)."""
+
+    def __init__(self, data, **extra):
+        super().__init__(data)
+        self.extra = extra
+
+    def __missing__(self, key):
+        return self.extra[key]
+
+    def get(self, key, default=None):
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        return self.extra.get(key, default)
+
+    def __contains__(self, key):
+        return dict.__contains__(self, key) or key in self.extra
+
+
+_KEEP = object()   # Sentinel für reset(goal_cycles=...): bisherigen Wert behalten
 
 
 # =============================================================================
@@ -225,7 +341,23 @@ CURVE_INFO = [
     ("HUMAN_SERVICE_CURVE", 13, "Humankapital-Wirkung", "Humankapital pro Kopf", "Multiplikator"),
     ("IMPORT_PRICE_MULT_CURVE", 14, "Importpreise", "Schulden / Ø Exporte", "Preismultiplikator"),
     ("INTEREST_RATE_CURVE", 15, "Zinssatz", "Schulden / Ø Exporte", "% pro Jahr"),
+    # Ministerien (eigene Näherungen; nur in curve_positions(), wenn das Ministerium aktiv ist)
+    ("HEALTH_DEATH_MULT_CURVE", 16, "Gesundheit: Sterberate", "Gesundheitskapital pro Kopf",
+     "Sterberaten-Multiplikator"),
+    ("EDUCATION_PRODUCTIVITY_CURVE", 17, "Bildung: Produktivität", "Bildungskapital pro Kopf",
+     "Güterproduktivitäts-Multiplikator"),
+    ("INFRA_ENERGY_CURVE", 18, "Infrastruktur: Energiebedarf", "Infrastruktur / Produktionskapital",
+     "Energiebedarfs-Multiplikator"),
+    ("INFRA_PRODUCTION_CURVE", 19, "Infrastruktur: Logistik", "Infrastruktur / Produktionskapital",
+     "Produktions-Multiplikator"),
+    ("DEFENSE_SECURITY_CURVE", 20, "Verteidigung: Sicherheit", "Verteidigungskapital pro Kopf",
+     "Sicherheit (0–1)"),
 ]
+
+# Kennlinie -> Ministerium (nur anzeigen, wenn aktiv)
+_CURVE_MINISTRY = {"HEALTH_DEATH_MULT_CURVE": "gesundheit", "EDUCATION_PRODUCTIVITY_CURVE": "bildung",
+                   "INFRA_ENERGY_CURVE": "infrastruktur", "INFRA_PRODUCTION_CURVE": "infrastruktur",
+                   "DEFENSE_SECURITY_CURVE": "verteidigung"}
 
 # Investitionsmixe des Beraters: Gewichte für
 # (Nahrung, Umwelt, Güter, Human, Energieproduktion, Energieeffizienz)
@@ -270,11 +402,26 @@ def _parse_number(value):
 
 
 def _coerce(inputs):
-    """Liefert (werte, ungültige_schlüssel). Fehlende/ungültige Werte = 0."""
+    """Liefert (werte, ungültige_schlüssel). Fehlende/ungültige Werte = 0.
+
+    Ministeriums-Schlüssel dürfen fehlen (oder leer sein) und gelten dann als 0;
+    nur ein vorhandener, ungültiger Wert ist ein Fehler.
+    """
     inputs = inputs or {}
+    is_dict = isinstance(inputs, dict)
     values, bad = {}, []
     for k in INPUT_KEYS:
-        v = _parse_number(inputs.get(k)) if isinstance(inputs, dict) else None
+        v = _parse_number(inputs.get(k)) if is_dict else None
+        if v is None:
+            bad.append(k)
+            v = 0.0
+        values[k] = v
+    for k in MINISTRY_INPUT_KEYS:
+        raw = inputs.get(k) if is_dict else None
+        if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+            values[k] = 0.0
+            continue
+        v = _parse_number(raw)
         if v is None:
             bad.append(k)
             v = 0.0
@@ -357,12 +504,40 @@ class EquivaraEngine:
     # Abb. 15: Zinssatz pro Jahr in Prozent
     INTEREST_RATE_CURVE = [(0.0, 10.0), (1.0, 10.0), (2.0, 15.0), (3.0, 16.8), (4.0, 18.4), (5.0, 20.0)]
 
-    def __init__(self, scenario: str = "standard", events_enabled: bool = False, seed: int | None = None):
+    # --- Ministerien: eigene Näherungen (nicht aus dem Kurzhandbuch) ---------
+    # Abb. 16: Sterberaten-Multiplikator aus Gesundheitskapital pro Kopf.
+    #   Startbestand 0.5/Kopf -> 0.95; sättigt bei ~4/Kopf auf 0.70.
+    HEALTH_DEATH_MULT_CURVE = [(0.0, 1.00), (0.5, 0.95), (1.0, 0.88), (2.0, 0.79), (3.0, 0.73),
+                               (4.0, 0.70), (6.0, 0.70)]
+    # Abb. 17: Güterproduktivitäts-Multiplikator aus Bildungskapital pro Kopf
+    #   (Bildungskapital wird erst nach 2 Zyklen wirksam). Sättigt bei 1.40.
+    EDUCATION_PRODUCTIVITY_CURVE = [(0.0, 1.00), (0.5, 1.05), (1.0, 1.12), (2.0, 1.24), (3.0, 1.32),
+                                    (4.0, 1.37), (6.0, 1.40)]
+    # Abb. 18: Energiebedarfs-Multiplikator aus Infrastruktur / (Nahrungs- + Güterkapital).
+    INFRA_ENERGY_CURVE = [(0.0, 1.00), (0.2, 0.97), (0.4, 0.92), (0.6, 0.86), (0.8, 0.82), (1.0, 0.80)]
+    # Abb. 19: Logistik-Multiplikator der Produktion (gleiche X-Achse). 0.3 = neutral,
+    #   zu wenig Infrastruktur -> bis 0.90, genug -> bis 1.10.
+    INFRA_PRODUCTION_CURVE = [(0.0, 0.90), (0.15, 0.95), (0.3, 1.00), (0.5, 1.05), (0.8, 1.10), (1.0, 1.10)]
+    # Abb. 20: Sicherheit 0..1 aus Verteidigungskapital pro Kopf.
+    DEFENSE_SECURITY_CURVE = [(0.0, 0.0), (0.25, 0.30), (0.5, 0.55), (1.0, 0.80), (1.5, 0.92), (2.0, 1.00)]
+    # Bildung senkt die Geburtenrate um bis zu 10 % (linear im Bildungseffekt)
+    # und verstärkt die Einsparung durch Energieeffizienz um bis zu 25 %.
+    EDUCATION_BIRTH_REDUCTION = 0.10
+    EDUCATION_EFFICIENCY_BONUS = 0.25
+    # Verteidigung bindet Arbeitskräfte: Anteil = 0.05 * Kapital pro Kopf, max. 10 %.
+    DEFENSE_LABOR_PER_CAPITAL = 0.05
+    DEFENSE_LABOR_MAX = 0.10
+
+    def __init__(self, scenario: str = "standard", events_enabled: bool = False, seed: int | None = None,
+                 ministries: dict | None = None, goal_cycles: int | None = 12):
         self._undo = []
         self.scenario = "standard"
         self.events_enabled = False
         self.seed = None
-        self.reset(scenario=scenario, events_enabled=events_enabled, seed=seed)
+        self.ministries = {k: False for k in MINISTRIES}
+        self.goal_cycles = 12
+        self.reset(scenario=scenario, events_enabled=events_enabled, seed=seed, ministries=ministries,
+                   goal_cycles=goal_cycles)
 
     # -------------------------------------------------------------------------
     # Zustand
@@ -372,13 +547,38 @@ class EquivaraEngine:
     def _random_seed() -> int:
         return random.SystemRandom().randrange(1, 1_000_000_000)
 
+    @staticmethod
+    def _normalize_ministries(ministries) -> dict:
+        out = {k: False for k in MINISTRIES}
+        for k, val in dict(ministries or {}).items():
+            if k not in MINISTRIES:
+                raise ValueError(f"Unbekanntes Ministerium: {k!r}")
+            out[k] = bool(val)
+        return out
+
+    @staticmethod
+    def _normalize_goal(goal_cycles):
+        if goal_cycles is None:
+            return None
+        g = int(goal_cycles)
+        if g < 1:
+            raise ValueError("Das Ziel muss mindestens 1 Zyklus betragen.")
+        return g
+
     def reset(self, scenario: str | None = None, events_enabled: bool | None = None,
-              seed: int | None = None) -> None:
+              seed: int | None = None, ministries: dict | None = None, goal_cycles=_KEEP) -> None:
         """Startzustand herstellen.
 
-        None = bisherigen Wert behalten. Gibt es noch keinen Seed, wird ein
+        None = bisherigen Wert behalten (bei goal_cycles: Argument weglassen;
+        goal_cycles=None bedeutet "endlos"). Gibt es noch keinen Seed, wird ein
         zufälliger erzeugt und gespeichert.
         """
+        if ministries is None:
+            ministries = getattr(self, "ministries", None)
+        ministries = self._normalize_ministries(ministries)
+        if goal_cycles is _KEEP:
+            goal_cycles = getattr(self, "goal_cycles", 12)
+        goal_cycles = self._normalize_goal(goal_cycles)
         if scenario is None:
             scenario = getattr(self, "scenario", "standard") or "standard"
         if scenario not in SCENARIOS:
@@ -393,9 +593,73 @@ class EquivaraEngine:
         self.events_enabled = bool(events_enabled)
         self.seed = int(seed)
         self._reset_state()
+        self.ministries = ministries
+        self.goal_cycles = goal_cycles
         for attr, value in SCENARIOS[scenario]["overrides"].items():
             setattr(self, attr, copy.deepcopy(value))
+        self._init_ministry_capital()
         self.history = [self._initial_record()]
+
+    def _init_ministry_capital(self) -> None:
+        """Startbestände der Ministerien (0 wenn inaktiv), nach den Szenario-Overrides."""
+        factor = MINISTRY_SCENARIO_FACTOR.get(self.scenario, 1.0)
+        pop_factor = self.population / 200.0
+        for key, m in MINISTRIES.items():
+            attr = m["capital_attr"]
+            if not self.ministries.get(key):
+                value = 0.0
+            elif attr == "cap_infrastructure":
+                value = round(MINISTRY_INFRA_START_RATIO * (self.cap_food + self.cap_goods) * factor, 1)
+            else:
+                value = round(MINISTRY_START[attr] * pop_factor * factor, 1)
+            setattr(self, attr, float(value))
+            setattr(self, "under_" + attr[4:], [0.0] * m["delay_cycles"])
+
+    # -------------------------------------------------------------------------
+    # Ministerien / Ziel – öffentliche Hilfen
+    # -------------------------------------------------------------------------
+
+    def is_active(self, ministry: str) -> bool:
+        return bool(self.ministries.get(ministry, False))
+
+    def any_ministry(self) -> bool:
+        return any(self.ministries.values())
+
+    def active_ministries(self) -> list[str]:
+        return [k for k in MINISTRIES if self.ministries.get(k)]
+
+    def active_invest_keys(self) -> list[str]:
+        return INVEST_KEYS + [MINISTRIES[k]["input_key"] for k in self.active_ministries()]
+
+    def active_input_keys(self) -> list[str]:
+        return INPUT_KEYS + [MINISTRIES[k]["input_key"] for k in self.active_ministries()]
+
+    @property
+    def cycles_played(self) -> int:
+        return self.runde - 1
+
+    @property
+    def goal_years(self) -> int | None:
+        return None if self.goal_cycles is None else self.goal_cycles * self.CYCLE_YEARS
+
+    @property
+    def goal_reached(self) -> bool:
+        return self.goal_cycles is not None and self.cycles_played >= self.goal_cycles
+
+    def continue_play(self) -> None:
+        """Nach Erreichen des Ziels weiterspielen (ohne Obergrenze)."""
+        self.continued = True
+        self.game_over = False
+
+    def _take_goal_snapshot(self) -> None:
+        end = self.history[-1] if self.history else self._initial_record()
+        sc = self.score()
+        sc.pop("goal_score", None)
+        snap = {"score": sc, "runde": end.get("runde"), "jahr_end": end.get("jahr_end"),
+                "goal_cycles": self.goal_cycles, "goal_years": self.goal_years}
+        for k in ("population", "food_pc", "goods_pc", "environment", "debt", "gdp", "gdp_pc"):
+            snap[k] = end.get(k)
+        self.goal_snapshot = snap
 
     def _reset_state(self) -> None:
         self.runde = 1
@@ -450,9 +714,14 @@ class EquivaraEngine:
         self.total_imports = 0.0
 
         self.game_over = False
+        self.continued = False
+        self.goal_snapshot = None
         self.last_inputs = None
         self._undo = []
         self.history = []
+
+        # Weltmarktpreise (Markt-Hook, von equivara_world gesetzt)
+        self.market = copy.deepcopy(DEFAULT_MARKET)
 
     def _state(self) -> dict:
         return copy.deepcopy({k: v for k, v in vars(self).items() if k != "_undo"})
@@ -472,6 +741,32 @@ class EquivaraEngine:
             self.events_enabled = bool(keep["events_enabled"])
         if getattr(self, "seed", None) is None:
             self.seed = keep["seed"] if keep["seed"] is not None else self._random_seed()
+        # Ältere Spielstände ohne Ministerien/Markt/Ziel -> alles aus, Standardmarkt, Ziel 12.
+        try:
+            self.ministries = self._normalize_ministries(state.get("ministries"))
+        except (ValueError, TypeError, AttributeError):
+            self.ministries = {k: False for k in MINISTRIES}
+        for m in MINISTRIES.values():
+            attr = m["capital_attr"]
+            if not isinstance(state.get(attr), (int, float)):
+                setattr(self, attr, 0.0)
+            under = "under_" + attr[4:]
+            if not isinstance(state.get(under), list) or len(state[under]) != m["delay_cycles"]:
+                setattr(self, under, [0.0] * m["delay_cycles"])
+        market = copy.deepcopy(DEFAULT_MARKET)
+        if isinstance(state.get("market"), dict):
+            for side in market:
+                for good in market[side]:
+                    try:
+                        market[side][good] = float(state["market"][side][good])
+                    except (KeyError, TypeError, ValueError):
+                        pass
+        self.market = market
+        if "goal_cycles" not in state:
+            self.goal_cycles = 12
+        self.continued = bool(state.get("continued", False))
+        snap = state.get("goal_snapshot")
+        self.goal_snapshot = copy.deepcopy(snap) if isinstance(snap, dict) else None
 
     def _light_clone(self) -> "EquivaraEngine":
         """Schnelle Kopie ohne Verlauf/Undo (für Berater-Simulationen)."""
@@ -505,7 +800,72 @@ class EquivaraEngine:
 
     @property
     def labor_force(self):
+        if self.ministries.get("verteidigung"):
+            return 0.25 * self.population * (1.0 - self.defense_labor_share())
         return 0.25 * self.population
+
+    # --- Ministeriums-Wirkungen (inaktiv: neutral, werden dann nicht angewendet) ---
+
+    def _per_capita(self, attr):
+        return getattr(self, attr, 0.0) / max(1.0, self.population)
+
+    def _infra_ratio(self):
+        prod = self.cap_food + self.cap_goods
+        return self.cap_infrastructure / prod if prod > 0 else 0.0
+
+    def health_multiplier(self):
+        """Sterberaten-Multiplikator (1.0 .. 0.7)."""
+        if not self.ministries.get("gesundheit"):
+            return 1.0
+        return interp(self._per_capita("cap_health"), self.HEALTH_DEATH_MULT_CURVE)
+
+    def education_multiplier(self):
+        """Güterproduktivitäts-Multiplikator (1.0 .. 1.4)."""
+        if not self.ministries.get("bildung"):
+            return 1.0
+        return interp(self._per_capita("cap_education"), self.EDUCATION_PRODUCTIVITY_CURVE)
+
+    def _education_level(self):
+        """Bildungseffekt normiert auf 0..1."""
+        top = self.EDUCATION_PRODUCTIVITY_CURVE[-1][1] - 1.0
+        return clamp((self.education_multiplier() - 1.0) / top, 0.0, 1.0)
+
+    def education_birth_multiplier(self):
+        return 1.0 - self.EDUCATION_BIRTH_REDUCTION * self._education_level()
+
+    def infra_energy_multiplier(self):
+        """Energiebedarfs-Multiplikator (1.0 .. 0.8)."""
+        if not self.ministries.get("infrastruktur"):
+            return 1.0
+        return interp(self._infra_ratio(), self.INFRA_ENERGY_CURVE)
+
+    def infra_production_multiplier(self):
+        """Logistik-Multiplikator der Produktion (0.9 .. 1.1; inaktiv exakt 1.0)."""
+        if not self.ministries.get("infrastruktur"):
+            return 1.0
+        return interp(self._infra_ratio(), self.INFRA_PRODUCTION_CURVE)
+
+    def security(self):
+        """Sicherheit 0..1 aus Verteidigungskapital pro Kopf."""
+        if not self.ministries.get("verteidigung"):
+            return 0.0
+        return interp(self._per_capita("cap_defense"), self.DEFENSE_SECURITY_CURVE)
+
+    def defense_labor_share(self):
+        if not self.ministries.get("verteidigung"):
+            return 0.0
+        return min(self.DEFENSE_LABOR_MAX, self.DEFENSE_LABOR_PER_CAPITAL * self._per_capita("cap_defense"))
+
+    def _event_damping(self, health=False):
+        """Faktor auf die Stärke negativer Ereignisse (1.0 = ungedämpft).
+
+        Verteidigung: * (1 - 0.5 * security). Gesundheit (nur Epidemie):
+        * (1 - 0.5 * Gesundheitseffekt), Gesundheitseffekt = (1 - health_mult) / 0.3.
+        """
+        f = 1.0 - 0.5 * self.security()
+        if health and self.ministries.get("gesundheit"):
+            f *= 1.0 - 0.5 * clamp((1.0 - self.health_multiplier()) / 0.3, 0.0, 1.0)
+        return f
 
     @property
     def human_services_pc(self):
@@ -523,7 +883,12 @@ class EquivaraEngine:
         production_capital = self.cap_food + self.cap_goods
         if production_capital <= 0:
             return 1.0
-        return interp(self.cap_energy_eff / production_capital, self.ENERGY_EFFICIENCY_CURVE)
+        m = interp(self.cap_energy_eff / production_capital, self.ENERGY_EFFICIENCY_CURVE)
+        if self.ministries.get("bildung"):
+            # Bildung verstärkt die Einsparung durch Effizienz (bis +25 %).
+            saving = (1.0 - m) * (1.0 + self.EDUCATION_EFFICIENCY_BONUS * self._education_level())
+            m = clamp(1.0 - saving, 0.2, 1.0)
+        return m
 
     def normal_birth_rate(self, average_goods_pc):
         return interp(clamp(average_goods_pc, 0.0, 15.0), self.BIRTH_RATE_CURVE)
@@ -538,10 +903,16 @@ class EquivaraEngine:
         return interp(clamp(self.environment, 0.0, 1.0), self.DEATH_ENV_MULT_CURVE)
 
     def birth_rate(self):
-        return self.normal_birth_rate(sum(self.goods_pc_history) / 3.0) * self.birth_service_multiplier()
+        rate = self.normal_birth_rate(sum(self.goods_pc_history) / 3.0) * self.birth_service_multiplier()
+        if self.ministries.get("bildung"):
+            rate *= self.education_birth_multiplier()
+        return rate
 
     def death_rate(self):
-        return self.normal_death_rate(self.food_pc) * self.death_environment_multiplier()
+        rate = self.normal_death_rate(self.food_pc) * self.death_environment_multiplier()
+        if self.ministries.get("gesundheit"):
+            rate *= self.health_multiplier()
+        return rate
 
     def energy_production(self):
         return interp(self.cap_energy_prod / 1000.0, self.ENERGY_PRODUCTION_LOW_CURVE) * 1000.0
@@ -551,17 +922,28 @@ class EquivaraEngine:
             food_mfc = 1.0
         if food_mfp is None:
             food_mfp = interp(self.active_food_capital / self.LAND_AREA, self.FOOD_CAPITAL_CURVE)
-        return 6250.0 * food_mfc * food_mfp * self.environment
+        value = 6250.0 * food_mfc * food_mfp * self.environment
+        if self.ministries.get("infrastruktur"):
+            value *= self.infra_production_multiplier()
+        return value
 
-    def expected_goods_production(self, goods_mgc=None):
+    def expected_goods_production(self, goods_mgc=None, goods_mgp=None):
         if goods_mgc is None:
             goods_mgc = 1.0
-        mgp = interp(self.active_goods_capital / max(1.0, self.labor_force), self.GOODS_CAPITAL_CURVE)
+        if goods_mgp is None:
+            goods_mgp = interp(self.active_goods_capital / max(1.0, self.labor_force), self.GOODS_CAPITAL_CURVE)
         mhs = interp(self.human_services_pc, self.HUMAN_SERVICE_CURVE)
-        return 5.775 * self.labor_force * goods_mgc * mgp * mhs
+        value = 5.775 * self.labor_force * goods_mgc * goods_mgp * mhs
+        if self.ministries.get("bildung"):
+            value *= self.education_multiplier()
+        if self.ministries.get("infrastruktur"):
+            value *= self.infra_production_multiplier()
+        return value
 
     def full_energy_requirements(self):
         eff = self.energy_efficiency_multiplier()
+        if self.ministries.get("infrastruktur"):
+            eff *= self.infra_energy_multiplier()
         food_req = self.cap_food * self.ENERGY_PER_FOOD_CAP * eff
         goods_req = self.cap_goods * self.ENERGY_PER_GOODS_CAP * eff
         pop_req = self.goods_pc * self.population * self.ENERGY_POPULATION_PER_GOODS
@@ -576,6 +958,13 @@ class EquivaraEngine:
         annual_interest = interp(clamp(ratio, 0.0, 5.0), self.INTEREST_RATE_CURVE)
         return avg_exports, ratio, import_mult, annual_interest
 
+    def _price(self, side: str, good: str) -> float:
+        """Weltmarktpreis aus self.market (Fallback: DEFAULT_MARKET)."""
+        try:
+            return float(self.market[side][good])
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return DEFAULT_MARKET[side][good]
+
     def _finance(self, v: dict) -> dict:
         """KORREKTUR 2: Finanzrechnung des Zyklus, ohne Zustand zu verändern.
 
@@ -589,10 +978,16 @@ class EquivaraEngine:
         avg_exports, ratio, import_mult, annual_interest = self.current_finance_conditions(debt)
         event = self._event_key()
         if event == "zinsschock":
-            annual_interest += 5.0
+            if self.ministries.get("verteidigung"):
+                annual_interest += 5.0 * self._event_damping()
+            else:
+                annual_interest += 5.0
         interest_due = debt * annual_interest / 100.0 * self.CYCLE_YEARS
         max_new_loan = max(0.0, avg_exports - debt)
-        export_money = v["energy_export"] + v["food_export"] + v["goods_export"]
+        # Markt-Hook: Exporterlös = Menge * Exportpreis (Default 1.0 -> bisheriges Verhalten).
+        export_money = (v["energy_export"] * self._price("export_price", "energy")
+                        + v["food_export"] * self._price("export_price", "food")
+                        + v["goods_export"] * self._price("export_price", "goods"))
         if event == "rohstoffboom":
             export_money *= 1.3
         cash_in = self.cash_reserve + export_money + v["foreign_aid"] + v["new_loans"]
@@ -628,7 +1023,7 @@ class EquivaraEngine:
         try:
             v, _ = _coerce(inputs)
         except Exception:
-            v = {k: 0.0 for k in INPUT_KEYS}
+            v = {k: 0.0 for k in ALL_INPUT_KEYS}
         fin = self._finance(v)
         return {
             "food": {"available": self.food_available,
@@ -640,13 +1035,13 @@ class EquivaraEngine:
                        + v["energy_carryover"] + v["goods_domestic"] / 5.0},
             "money": {"available": fin["import_budget"], "used": fin["imports"]},
             "invest": {"available": v["goods_investment"],
-                       "used": sum(v[k] for k in INVEST_KEYS)},
+                       "used": sum(v[k] for k in self.active_invest_keys())},
         }
 
     def requirements(self) -> dict:
         food_req, goods_req, _ = self.full_energy_requirements()
         fin = self._finance({k: 0.0 for k in INPUT_KEYS})
-        return {
+        return _Requirements({
             "energy_food_full": food_req,
             "energy_goods_full": goods_req,
             "energy_population_per_goods": self.ENERGY_POPULATION_PER_GOODS,
@@ -658,7 +1053,7 @@ class EquivaraEngine:
             "max_new_loan": fin["max_new_loan"],
             "cash_reserve": self.cash_reserve,
             "imf_pending": self.imf_pending,
-        }
+        }, market=copy.deepcopy(self.market))
 
     def validate(self, inputs: dict) -> list[Issue]:
         """KORREKTUR 1/5: reine Prüfung, verändert nichts am Zustand."""
@@ -671,13 +1066,22 @@ class EquivaraEngine:
             issues.append(Issue(field, msg, "warning"))
 
         if self.game_over:
-            err(None, "Das Spiel ist beendet – alle 12 Zyklen (60 Jahre) sind gespielt.")
+            if self.goal_cycles is not None:
+                err(None, f"Das Spiel ist beendet – das Ziel von {self.goal_cycles} Zyklen "
+                          f"({self.goal_years} Jahre) ist erreicht.")
+            else:
+                err(None, "Das Spiel ist beendet.")
             return issues
 
         v, bad = _coerce(inputs)
         for k in bad:
             err(k, f"{INPUT_LABELS[k]}: ungültige oder fehlende Zahl.")
-        for k in INPUT_KEYS:
+        for k in MINISTRY_INPUT_KEYS:
+            mk = _MINISTRY_BY_INPUT[k]
+            if k not in bad and not self.ministries.get(mk) and abs(v[k]) > TOL:
+                err(k, f"{INPUT_LABELS[k]}: Das Ministerium {MINISTRIES[mk]['name']} ist in diesem Spiel "
+                       f"nicht aktiv – der Wert muss 0 sein.")
+        for k in self.active_input_keys():
             if k in bad:
                 continue
             x = v[k]
@@ -703,7 +1107,7 @@ class EquivaraEngine:
                       f"{_fmt(energy_used)} EW (inkl. {_fmt(energy_pop)} EW Bevölkerungsenergie).")
 
         # Investitionen
-        inv_sum = sum(v[k] for k in INVEST_KEYS)
+        inv_sum = sum(v[k] for k in self.active_invest_keys())
         if inv_sum > v["goods_investment"] + TOL:
             err(None, f"Investitionen ({_fmt(inv_sum)}) übersteigen "
                       f"{INPUT_LABELS['goods_investment']} ({_fmt(v['goods_investment'])}) "
@@ -786,6 +1190,19 @@ class EquivaraEngine:
         if self.energy_available < food_req + goods_req + pop_req:
             out.append(f"Energie ({_fmt(self.energy_available)}) reicht nicht für volle Auslastung "
                        f"(Bedarf {_fmt(food_req + goods_req + pop_req)} EW).")
+        if self.ministries.get("gesundheit") and self._per_capita("cap_health") < 0.3:
+            out.append("Gesundheitswesen unterversorgt – kaum Schutz vor Sterblichkeit und Epidemien.")
+        if self.ministries.get("bildung") and self._per_capita("cap_education") < 0.3:
+            out.append("Bildungssystem unterfinanziert – die Produktivität profitiert kaum von Bildung.")
+        if self.ministries.get("infrastruktur") and self.infra_production_multiplier() < 1.0 - 1e-9:
+            out.append(f"Infrastruktur reicht nicht für das Produktionskapital – Logistik bremst die "
+                       f"Produktion ({(1 - self.infra_production_multiplier()) * 100:.0f} % Verlust).")
+        if self.ministries.get("verteidigung"):
+            if self.security() < 0.25:
+                out.append(f"Sicherheit niedrig ({self.security() * 100:.0f} %) – negative Ereignisse "
+                           f"treffen das Land fast ungebremst.")
+            if self.defense_labor_share() >= self.DEFENSE_LABOR_MAX - 1e-9:
+                out.append("Die Streitkräfte binden 10 % der Arbeitskräfte (Maximum).")
         return out
 
     # -------------------------------------------------------------------------
@@ -808,7 +1225,9 @@ class EquivaraEngine:
         result = self._simulate(v)
         self._undo.append(snapshot)
         self.history.append(copy.deepcopy(result))
-        self.last_inputs = dict(v)
+        self.last_inputs = {k: v[k] for k in self.active_input_keys()}
+        if self.goal_snapshot is None and self.goal_reached:
+            self._take_goal_snapshot()
         return result
 
     def berechne_runde(self, inputs):
@@ -833,13 +1252,20 @@ class EquivaraEngine:
         Importe nur abwärts auf das Importbudget skaliert. Alles wird abwärts
         auf Vielfache von 10 gerundet.
         """
-        zeros = {k: 0.0 for k in INPUT_KEYS}
+        keys = self.active_input_keys()
+        inv_keys = self.active_invest_keys()
+        zeros = {k: 0.0 for k in keys}
         if self.game_over:
             return zeros
         if base is None:
             base = self.last_inputs if self.last_inputs is not None else DEFAULT_INPUTS
+        base = dict(base) if isinstance(base, dict) else {}
+        for k in inv_keys[len(INVEST_KEYS):]:
+            # Aktive Ministerien ohne Vorgabe bekommen einen kleinen Startbetrag.
+            if base.get(k) is None:
+                base[k] = MINISTRY_DEFAULT_INPUTS[k]
         v, _ = _coerce(base)
-        v = {k: _floor10(max(0.0, x)) for k, x in v.items()}
+        v = {k: _floor10(max(0.0, v[k])) for k in keys}
 
         def scale(keys, target):
             total = sum(v[k] for k in keys)
@@ -874,9 +1300,9 @@ class EquivaraEngine:
         v["energy_carryover"] += rest
 
         # Investitionen
-        scale(INVEST_KEYS, v["goods_investment"])
+        scale(inv_keys, v["goods_investment"])
         v["inv_energy_eff"] = min(v["inv_energy_eff"], v["inv_food"] + v["inv_goods"])
-        rest = _floor10(v["goods_investment"] - sum(v[k] for k in INVEST_KEYS))
+        rest = _floor10(v["goods_investment"] - sum(v[k] for k in inv_keys))
         others = [k for k in INVEST_KEYS if k != "inv_energy_eff"]
         biggest = max(others, key=lambda k: v[k])
         if rest > 0 and v[biggest] > 0:
@@ -914,9 +1340,12 @@ class EquivaraEngine:
     #                  Startbevölkerung) und Wachstum (|netto| <= 5 pro 1000/Jahr
     #                  volle Punkte, 0 Punkte ab 25)
     SCORE_WEIGHTS = {"food": 30, "goods": 20, "environment": 20, "debt": 15, "population": 15}
+    #  services    10  nur wenn Ministerien aktiv sind (die übrigen Gewichte werden
+    #                  dann mit 0.9 skaliert, die Summe bleibt 100)
+    SCORE_SERVICES_WEIGHT = 10
 
     @classmethod
-    def _score_parts(cls, end: dict, start: dict) -> dict:
+    def _score_parts(cls, end: dict, start: dict, ministries: dict | None = None) -> dict:
         w = cls.SCORE_WEIGHTS
 
         def g(d, k, default=0.0):
@@ -934,15 +1363,34 @@ class EquivaraEngine:
         size = clamp(g(end, "population") / max(1.0, g(start, "population", 200.0)), 0.0, 1.0)
         stab = clamp(1.0 - max(0.0, abs(g(end, "net_growth")) - 5.0) / 20.0, 0.0, 1.0)
         pop = w["population"] * (0.5 * size + 0.5 * stab)
-        return {"food": (food, w["food"]), "goods": (goods, w["goods"]),
-                "environment": (env, w["environment"]), "debt": (debt, w["debt"]),
-                "population": (pop, w["population"])}
+        parts = {"food": (food, w["food"]), "goods": (goods, w["goods"]),
+                 "environment": (env, w["environment"]), "debt": (debt, w["debt"]),
+                 "population": (pop, w["population"])}
+        active = [k for k in MINISTRIES if (ministries or {}).get(k)]
+        if not active:
+            return parts
+        # Mit aktiven Ministerien: bisherige Teile * 0.9, dazu "services" (max. 10)
+        # = mittlerer Ausbaugrad der aktiven Ministerien (je 0..1):
+        #   Gesundheit (1 - health_mult) / 0.25, Bildung (education_mult - 1) / 0.3,
+        #   Infrastruktur (infra_mult - 0.9) / 0.15, Verteidigung security / 0.8.
+        f = 1.0 - cls.SCORE_SERVICES_WEIGHT / 100.0
+        parts = {k: (p * f, m * f) for k, (p, m) in parts.items()}
+        levels = {
+            "gesundheit": (1.0 - g(end, "health_mult", 1.0)) / 0.25,
+            "bildung": (g(end, "education_mult", 1.0) - 1.0) / 0.3,
+            "infrastruktur": (g(end, "infra_mult", 1.0) - 0.9) / 0.15,
+            "verteidigung": g(end, "security", 0.0) / 0.8,
+        }
+        level = sum(clamp(levels[k], 0.0, 1.0) for k in active) / len(active)
+        ws = cls.SCORE_SERVICES_WEIGHT
+        parts["services"] = (ws * level, ws)
+        return parts
 
     def score(self) -> dict:
         """Score 0..100 des aktuellen Zustands (siehe SCORE_WEIGHTS)."""
         start = self.history[0] if self.history else self._initial_record()
         end = self.history[-1] if self.history else start
-        parts = self._score_parts(end, start)
+        parts = self._score_parts(end, start, self.ministries)
         total = clamp(sum(p for p, _ in parts.values()), 0.0, 100.0)
         if total >= 85:
             grade = "A"
@@ -957,7 +1405,8 @@ class EquivaraEngine:
         else:
             grade = "F"
         names = {"food": "Nahrungsversorgung", "goods": "Güterversorgung", "environment": "Umweltqualität",
-                 "debt": "Verschuldung", "population": "Bevölkerungsstabilität"}
+                 "debt": "Verschuldung", "population": "Bevölkerungsstabilität",
+                 "services": "Staatsaufgaben (Ministerien)"}
         weakest = min(parts, key=lambda k: parts[k][0] / parts[k][1])
         strongest = max(parts, key=lambda k: parts[k][0] / parts[k][1])
         lead = {"A": "Hervorragend regiert.", "B": "Gut regiert.", "C": "Solide, mit Schwächen.",
@@ -968,7 +1417,15 @@ class EquivaraEngine:
         else:
             comment = (f"{lead} Stärke: {names[strongest]}. "
                        f"Größtes Verbesserungspotenzial: {names[weakest]}.")
-        return {"total": total, "grade": grade, "parts": parts, "comment": comment}
+        out = {"total": total, "grade": grade, "parts": parts, "comment": comment}
+        snap = getattr(self, "goal_snapshot", None)
+        if snap and self.cycles_played > (snap.get("runde") or 0):
+            # Über das Ziel hinaus gespielt: Score im Moment des Zielerreichens.
+            try:
+                out["goal_score"] = float(snap["score"]["total"])
+            except (KeyError, TypeError, ValueError):
+                pass
+        return out
 
     # -------------------------------------------------------------------------
     # Berater
@@ -986,9 +1443,20 @@ class EquivaraEngine:
         ("fin", ["reserve", "repay", "food", "goods", "energy", "repay_food", "loan_food"]),
     ]
 
+    def _advisor_dims(self) -> list:
+        """Suchdimensionen; mit aktiven Ministerien zusätzlich Anteil + Schwerpunkt."""
+        active = self.active_ministries()
+        if not active:
+            return self._ADVISOR_DIMS
+        dims = list(self._ADVISOR_DIMS)
+        dims.append(("ms", [0.15, 0.08, 0.25, 0.35, 0.0]))     # Anteil Ministerien am Investitionsbudget
+        if len(active) > 1:
+            dims.append(("mf", ["gleich"] + active))           # Schwerpunkt-Ministerium
+        return dims
+
     def _advisor_inputs(self, p: dict) -> dict:
         """Baut Eingaben aus Beraterparametern für den aktuellen Zustand."""
-        v = {k: 0.0 for k in INPUT_KEYS}
+        v = {k: 0.0 for k in self.active_input_keys()}
         pop = max(1.0, self.population)
         food_av = self.food_available
         v["food_domestic"] = _floor10(min(food_av, p["fc"] * pop * 5.0))
@@ -1019,6 +1487,16 @@ class EquivaraEngine:
             v["energy_carryover"] = r
 
         gi = v["goods_investment"]
+        active = self.active_ministries()
+        if active:
+            # Anteil des Investitionsbudgets für die Ministerien; Schwerpunkt "mf"
+            # bekommt dreifaches Gewicht.
+            m_budget = _floor10(gi * p.get("ms", 0.0))
+            mw = {k: (3.0 if p.get("mf") == k else 1.0) for k in active}
+            mws = sum(mw.values())
+            for k in active:
+                v[MINISTRIES[k]["input_key"]] = _floor10(m_budget * mw[k] / mws)
+            gi = gi - sum(v[MINISTRIES[k]["input_key"]] for k in active)
         weights = _ADVISOR_MIXES[p["mix"]]
         wsum = float(sum(weights))
         for k, w in zip(INVEST_KEYS, weights):
@@ -1050,7 +1528,7 @@ class EquivaraEngine:
 
     def _advisor_value(self, res: dict, start: dict) -> float:
         """Bewertung eines (simulierten) Zustands: Score + zukünftige Kapazität."""
-        value = sum(p for p, _ in self._score_parts(res, start).values())
+        value = sum(p for p, _ in self._score_parts(res, start, self.ministries).values())
         # Schuldenspirale zusätzlich bestrafen (der Score-Anteil ist bei 0 gedeckelt).
         value -= 8.0 * math.log1p(max(0.0, self.current_finance_conditions()[1] - 1.5))
         if not self.game_over:
@@ -1082,11 +1560,12 @@ class EquivaraEngine:
         erzeugt; jede Variante wird über einige Zyklen vorausgerechnet
         (Koordinatensuche) und nach Score + zukünftiger Kapazität bewertet.
         """
-        zeros = {k: 0.0 for k in INPUT_KEYS}
+        zeros = {k: 0.0 for k in self.active_input_keys()}
         if self.game_over:
             return zeros, ["Das Spiel ist beendet – keine Eingaben mehr nötig."]
         start = self.history[0] if self.history else self._initial_record()
         horizon = self._ADVISOR_HORIZON
+        dims = self._advisor_dims()
         cache = {}
 
         def evaluate(p):
@@ -1101,14 +1580,14 @@ class EquivaraEngine:
             cache[key] = val
             return val
 
-        best = {name: opts[0] for name, opts in self._ADVISOR_DIMS}
+        best = {name: opts[0] for name, opts in dims}
         best["mix"] = "ausgewogen"
         best_val = evaluate(best)
         if best_val is None:
             best_val = -math.inf
         for _ in range(3):
             improved = False
-            for name, opts in self._ADVISOR_DIMS:
+            for name, opts in dims:
                 for o in opts:
                     if o == best[name]:
                         continue
@@ -1149,6 +1628,13 @@ class EquivaraEngine:
         out.append(f"Investitionen: Schwerpunkt „{p['mix']}“ – "
                    + ", ".join(f"{INPUT_LABELS[k].replace('Investition ', '')} {_fmt(v[k])}"
                                for k in INVEST_KEYS if v[k] > 0) + ".")
+        active = self.active_ministries()
+        if active:
+            parts = [f"{MINISTRIES[k]['name']} {_fmt(v.get(MINISTRIES[k]['input_key'], 0.0))}" for k in active]
+            focus = p.get("mf")
+            focus_txt = (f", Schwerpunkt {MINISTRIES[focus]['name']}" if focus in MINISTRIES else "")
+            out.append(f"Ministerien: {p.get('ms', 0.0) * 100:.0f} % des Investitionsbudgets{focus_txt} – "
+                       + ", ".join(parts) + ".")
         fin_text = {
             "reserve": "Devisen bleiben als Reserve für den nächsten Zyklus.",
             "repay": f"Freie Devisen tilgen Schulden ({_fmt(v['repayments'])}).",
@@ -1173,7 +1659,7 @@ class EquivaraEngine:
     # -------------------------------------------------------------------------
 
     def curve_positions(self) -> list[dict]:
-        """Alle 15 Kennlinien mit aktuellem Arbeitspunkt (x, y)."""
+        """Alle 15 Kennlinien (+ die der aktiven Ministerien) mit aktuellem Arbeitspunkt (x, y)."""
         prod_cap = self.cap_food + self.cap_goods
         ratio = self.current_finance_conditions()[1]
         load = max(0.0, self.active_food_capital + self.active_goods_capital + self.cap_energy_prod
@@ -1195,9 +1681,16 @@ class EquivaraEngine:
             "HUMAN_SERVICE_CURVE": self.human_services_pc,
             "IMPORT_PRICE_MULT_CURVE": ratio,
             "INTEREST_RATE_CURVE": ratio,
+            "HEALTH_DEATH_MULT_CURVE": self._per_capita("cap_health"),
+            "EDUCATION_PRODUCTIVITY_CURVE": self._per_capita("cap_education"),
+            "INFRA_ENERGY_CURVE": self._infra_ratio(),
+            "INFRA_PRODUCTION_CURVE": self._infra_ratio(),
+            "DEFENSE_SECURITY_CURVE": self._per_capita("cap_defense"),
         }
         out = []
         for key, fig, title, x_label, y_label in CURVE_INFO:
+            if key in _CURVE_MINISTRY and not self.ministries.get(_CURVE_MINISTRY[key]):
+                continue
             points = [(float(a), float(b)) for a, b in getattr(self, key)]
             x = xs.get(key)
             y = None
@@ -1219,6 +1712,15 @@ class EquivaraEngine:
         fin = self._finance(x)
         event_key = self._event_key()
         event = dict(_EVENTS_BY_KEY[event_key]) if event_key else None
+        any_min = self.any_ministry()
+        # Ministeriums-Wirkungen zu Zyklusbeginn (inaktiv: neutral, nicht angewendet)
+        health_mult = self.health_multiplier()
+        education_mult = self.education_multiplier()
+        infra_mult = self.infra_production_multiplier()
+        infra_energy_mult = self.infra_energy_multiplier()
+        security = self.security()
+        damping = self._event_damping() if any_min else 1.0
+        damping_health = self._event_damping(health=True) if any_min else 1.0
 
         food_domestic = x["food_domestic"]
         goods_domestic = x["goods_domestic"]
@@ -1245,13 +1747,16 @@ class EquivaraEngine:
         expected_food = self.expected_food_production(food_mfc=food_mfc, food_mfp=food_mfp)
         produced_food = max(0.0, expected_food * food_cu)
         if event_key == "duerre":
-            produced_food *= 0.75
+            if damping != 1.0:
+                produced_food *= 1.0 - 0.25 * damping
+            else:
+                produced_food *= 0.75
         elif event_key == "gute_ernte":
             produced_food *= 1.15
 
         goods_mgp = interp(active_goods_for_output / max(1.0, self.labor_force), self.GOODS_CAPITAL_CURVE)
         goods_mhs = interp(self.human_services_pc, self.HUMAN_SERVICE_CURVE)
-        expected_goods = 5.775 * self.labor_force * goods_mgc * goods_mgp * goods_mhs
+        expected_goods = self.expected_goods_production(goods_mgc=goods_mgc, goods_mgp=goods_mgp)
         produced_goods = max(0.0, expected_goods * goods_cu)
 
         produced_energy = self.energy_production()
@@ -1271,11 +1776,18 @@ class EquivaraEngine:
         normal_birth = self.normal_birth_rate(avg_goods_pc)
         birth_mult = self.birth_service_multiplier()
         actual_birth = normal_birth * birth_mult
+        if self.ministries.get("bildung"):
+            actual_birth *= self.education_birth_multiplier()
         normal_death = self.normal_death_rate(current_food_pc)
         death_mult = self.death_environment_multiplier()
         actual_death = normal_death * death_mult
+        if self.ministries.get("gesundheit"):
+            actual_death *= health_mult
         if event_key == "epidemie":
-            actual_death *= 1.3
+            if damping_health != 1.0:
+                actual_death *= 1.0 + 0.3 * damping_health
+            else:
+                actual_death *= 1.3
         annual_growth = (actual_birth - actual_death) / 1000.0
         self.population = max(1.0, self.population * math.exp(annual_growth * self.CYCLE_YEARS))
 
@@ -1283,10 +1795,15 @@ class EquivaraEngine:
         imf_paid_this_cycle = fin["imf_paid"]
         self.imf_pending = 0.0
         import_mult = fin["import_mult"]
-        energy_price = 2.0 if event_key == "oelpreisschock" else 1.0
+        # Markt-Hook: Import-Einheiten = Geld / (Importpreis * import_mult);
+        # Ölpreisschock wirkt multiplikativ zusätzlich (gedämpft durch Verteidigung).
+        energy_price = self._price("import_price", "energy")
+        if event_key == "oelpreisschock":
+            energy_price *= (1.0 + damping) if damping != 1.0 else 2.0
         energy_import_units = x["import_energy_money"] / max(0.0001, energy_price * import_mult)
-        food_import_units = x["import_food_money"] / max(0.0001, 1.1 * import_mult)
-        goods_import_units = x["import_goods_money"] / max(0.0001, 1.1 * import_mult)
+        food_import_units = x["import_food_money"] / max(0.0001, self._price("import_price", "food") * import_mult)
+        goods_import_units = x["import_goods_money"] / max(0.0001,
+                                                          self._price("import_price", "goods") * import_mult)
         import_spending = fin["imports"]
 
         # Zinsen werden genau einmal behandelt: bezahlt aus cash_in oder
@@ -1323,6 +1840,15 @@ class EquivaraEngine:
             ready = queue.pop(0)
             queue.append(x[key])
             setattr(self, cap, getattr(self, cap) + ready)
+        # Ministerien: Verschleiß (CYCLE_YEARS / Lebensdauer) + Bau-Verzögerung
+        for mkey in self.active_ministries():
+            m = MINISTRIES[mkey]
+            cap = m["capital_attr"]
+            queue = getattr(self, "under_" + cap[4:])
+            setattr(self, cap, getattr(self, cap) * (1.0 - self.CYCLE_YEARS / m["lifetime"]))
+            ready = queue.pop(0)
+            queue.append(float(x.get(m["input_key"], 0.0)))
+            setattr(self, cap, getattr(self, cap) + ready)
 
         # --- Bestände für den nächsten Zyklus ---------------------------------
         self.food_available = produced_food + food_import_units
@@ -1357,7 +1883,8 @@ class EquivaraEngine:
 
         cycle_finished = self.runde
         self.runde += 1
-        if cycle_finished >= self.TOTAL_CYCLES:
+        if (self.goal_cycles is not None and cycle_finished >= self.goal_cycles
+                and not getattr(self, "continued", False)):
             self.game_over = True
 
         return {
@@ -1441,6 +1968,20 @@ class EquivaraEngine:
             "game_over": self.game_over,
             "event": event,
             "scenario": self.scenario,
+
+            **self._ministry_record(health_mult, education_mult, infra_mult, security, infra_energy_mult),
+            "exports": {"food": x["food_export"], "goods": x["goods_export"], "energy": x["energy_export"]},
+            "imports": {"food": food_import_units, "goods": goods_import_units, "energy": energy_import_units},
+        }
+
+    def _ministry_record(self, health_mult, education_mult, infra_mult, security, infra_energy_mult):
+        """Ministeriums-Kennzahlen (immer vorhanden; inaktiv 0 bzw. 1.0)."""
+        return {
+            "cap_health": self.cap_health, "cap_education": self.cap_education,
+            "cap_infrastructure": self.cap_infrastructure, "cap_defense": self.cap_defense,
+            "security": security, "health_mult": health_mult, "education_mult": education_mult,
+            "infra_mult": infra_mult, "infra_energy_mult": infra_energy_mult,
+            "defense_labor_share": self.defense_labor_share(),
         }
 
     def _initial_record(self) -> dict:
@@ -1482,6 +2023,11 @@ class EquivaraEngine:
             "game_over": False,
             "event": None,
             "scenario": self.scenario,
+            **self._ministry_record(self.health_multiplier(), self.education_multiplier(),
+                                    self.infra_production_multiplier(), self.security(),
+                                    self.infra_energy_multiplier()),
+            "exports": {"food": 0.0, "goods": 0.0, "energy": 0.0},
+            "imports": {"food": 0.0, "goods": 0.0, "energy": 0.0},
         }
 
     # -------------------------------------------------------------------------
@@ -1489,7 +2035,7 @@ class EquivaraEngine:
     # -------------------------------------------------------------------------
 
     def to_json(self) -> str:
-        return json.dumps({"format": "equivara-engine", "version": 2,
+        return json.dumps({"format": "equivara-engine", "version": 3,
                            "state": self._state(), "undo": self._undo},
                           ensure_ascii=False, sort_keys=True)
 
